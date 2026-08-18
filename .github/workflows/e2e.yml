@@ -1,0 +1,143 @@
+# Переиспользуемый e2e-воркфлоу системы overmindv.
+#
+# Вызывается из CI сервисов (users/tasks/api-gateway/...) при пуше/PR:
+#   jobs:
+#     e2e:
+#       permissions:
+#         contents: read
+#       uses: overmindv/tests/.github/workflows/e2e.yml@main
+#       with:
+#         target_repo: users   # репозиторий, где произошло изменение
+#
+# При вызове поднимает весь стек (docker-compose из overmindv/infra, который
+# собирает сервисы из соседних каталогов ../users, ../tasks, ...), прогоняет
+# e2e-тесты и выкладывает allure-результаты артефактом.
+name: e2e tests
+
+on:
+  workflow_call:
+    inputs:
+      target_repo:
+        description: "Репозиторий-источник изменения (users/tasks/api-gateway/entities/task-hunter/frontend)"
+        required: true
+        type: string
+  # Ручной запуск (Actions -> Run workflow), например, для полного прогона по tests@main.
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: "Репозиторий-источник изменения (пусто = дефолтные ветки всех сервисов)"
+        required: false
+        default: ""
+        type: string
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Create workspace
+        run: mkdir -p workspace
+
+      # --- Инфраструктура и тесты ---
+      - name: Checkout tests
+        uses: actions/checkout@v4
+        with:
+          repository: overmindv/tests
+          path: workspace/tests
+
+      - name: Checkout infra
+        uses: actions/checkout@v4
+        with:
+          repository: overmindv/infra
+          path: workspace/infra
+
+      # --- Сервисы (по умолчанию берём их main) ---
+      - name: Checkout api-gateway
+        uses: actions/checkout@v4
+        with:
+          repository: overmindv/api-gateway
+          path: workspace/api-gateway
+
+      - name: Checkout users
+        uses: actions/checkout@v4
+        with:
+          repository: overmindv/users
+          path: workspace/users
+
+      - name: Checkout tasks
+        uses: actions/checkout@v4
+        with:
+          repository: overmindv/tasks
+          path: workspace/tasks
+
+      - name: Checkout entities
+        uses: actions/checkout@v4
+        with:
+          repository: overmindv/entities
+          path: workspace/entities
+
+      - name: Checkout task-hunter
+        uses: actions/checkout@v4
+        with:
+          repository: overmindv/task-hunter
+          path: workspace/task-hunter
+
+      - name: Checkout frontend
+        uses: actions/checkout@v4
+        with:
+          repository: overmindv/frontend
+          path: workspace/frontend
+
+      # --- Источник изменения переопределяем на коммит пуша ---
+      - name: Checkout target repo at pushed ref
+        if: inputs.target_repo != ''
+        uses: actions/checkout@v4
+        with:
+          repository: overmindv/${{ inputs.target_repo }}
+          ref: ${{ github.sha }}
+          path: workspace/${{ inputs.target_repo }}
+
+      # --- Python / тесты ---
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        working-directory: workspace/tests
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # --- Стек ---
+      - name: Prepare infra .env
+        working-directory: workspace/infra
+        run: |
+          if [ -x scripts/prepare-env.sh ]; then
+            ./scripts/prepare-env.sh .env || true
+          fi
+          test -f .env || echo "JWT_SECRET=ci-test-secret" > .env
+
+      - name: Bring up stack
+        working-directory: workspace/infra
+        run: docker compose --env-file .env -f docker-compose.yml up --build -d --wait --wait-timeout 600
+
+      - name: Run e2e tests
+        working-directory: workspace/tests
+        run: |
+          set -euxo pipefail
+          BASE_URL=http://localhost:8081 \
+          python -m pytest -m "e2e and not skip_ci" -n "${PYTEST_NUM_WORKERS:-2}" --maxfail=5
+
+      - name: Upload Allure results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-results
+          path: workspace/tests/allure-results/
+          if-no-files-found: warn
+
+      - name: Tear down stack
+        if: always()
+        working-directory: workspace/infra
+        run: docker compose --env-file .env -f docker-compose.yml down --remove-orphans

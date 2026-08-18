@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "overmindv-tests"
+version = "0.1.0"
+description = "Интеграционные (e2e) тесты системы overmindv через api-gateway"
+readme = "CLAUDE.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+
+[tool.setuptools]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+# tests/ — каталог тестов; pythonpath добавляет корень репо, чтобы `src` был импортируем.
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-v -l --disable-warnings --strict-markers"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+markers = [
+    "e2e: полный сквозной сценарий через api-gateway",
+    "auth: сценарии аутентификации",
+    "tasks: сценарии создания/решения задач",
+    "progress: проверка истории решений пользователя",
+    "skip_ci: тесты, которые нельзя запускать в CI (например, требующие ручного стенда)",
+    "link: привязка теста к внешней ссылке (используется mark.link)",
+    "non_blocker: мягкая пометка теста, не блокирует релиз (используется mark.non_blocker)",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+ignore = ["E501"]
