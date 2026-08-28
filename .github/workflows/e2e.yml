@@ -44,12 +44,14 @@ jobs:
         with:
           repository: overmindv/tests
           path: workspace/tests
+          token: ${{ secrets.ORGANIZATION_READ_TOKEN }}
 
       - name: Checkout infra
         uses: actions/checkout@v4
         with:
           repository: overmindv/infra
           path: workspace/infra
+          token: ${{ secrets.ORGANIZATION_READ_TOKEN }}
 
       # --- Сервисы (по умолчанию берём их main) ---
       - name: Checkout api-gateway
@@ -57,36 +59,42 @@ jobs:
         with:
           repository: overmindv/api-gateway
           path: workspace/api-gateway
+          token: ${{ secrets.ORGANIZATION_READ_TOKEN }}
 
       - name: Checkout users
         uses: actions/checkout@v4
         with:
           repository: overmindv/users
           path: workspace/users
+          token: ${{ secrets.ORGANIZATION_READ_TOKEN }}
 
       - name: Checkout tasks
         uses: actions/checkout@v4
         with:
           repository: overmindv/tasks
           path: workspace/tasks
+          token: ${{ secrets.ORGANIZATION_READ_TOKEN }}
 
       - name: Checkout entities
         uses: actions/checkout@v4
         with:
           repository: overmindv/entities
           path: workspace/entities
+          token: ${{ secrets.ORGANIZATION_READ_TOKEN }}
 
       - name: Checkout task-hunter
         uses: actions/checkout@v4
         with:
           repository: overmindv/task-hunter
           path: workspace/task-hunter
+          token: ${{ secrets.ORGANIZATION_READ_TOKEN }}
 
       - name: Checkout frontend
         uses: actions/checkout@v4
         with:
           repository: overmindv/frontend
           path: workspace/frontend
+          token: ${{ secrets.ORGANIZATION_READ_TOKEN }}
 
       # --- Источник изменения переопределяем на коммит пуша ---
       - name: Checkout target repo at pushed ref
@@ -96,6 +104,7 @@ jobs:
           repository: overmindv/${{ inputs.target_repo }}
           ref: ${{ github.sha }}
           path: workspace/${{ inputs.target_repo }}
+          token: ${{ secrets.ORGANIZATION_READ_TOKEN }}
 
       # --- Python / тесты ---
       - name: Set up Python
