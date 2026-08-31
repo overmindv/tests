@@ -19,10 +19,10 @@ ALLURE_RESULTS_DIR = Path(os.getenv("ALLURE_RESULTS_DIR", "allure-results"))
 
 
 @pytest.hookimpl(tryfirst=True)
-def pytest_configure(cfg: pytest.Config) -> None:
+def pytest_configure(config: pytest.Config) -> None:
     """Задать каталог для allure-report базово (если не задан флагом)."""
-    if not getattr(cfg.option, "allure_report_dir", None):
-        cfg.option.allure_report_dir = str(ALLURE_RESULTS_DIR)
+    if not getattr(config.option, "allure_report_dir", None):
+        config.option.allure_report_dir = str(ALLURE_RESULTS_DIR)
     if not ALLURE_RESULTS_DIR.exists():
         ALLURE_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
