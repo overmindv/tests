@@ -104,6 +104,13 @@ jobs:
           path: workspace/media
           token: ${{ secrets.ORGANIZATION_READ_TOKEN }}
 
+      - name: Checkout content
+        uses: actions/checkout@v4
+        with:
+          repository: overmindv/content
+          path: workspace/content
+          token: ${{ secrets.ORGANIZATION_READ_TOKEN }}
+
       # --- Источник изменения переопределяем на коммит пуша ---
       - name: Checkout target repo at pushed ref
         if: inputs.target_repo != ''
