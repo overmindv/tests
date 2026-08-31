@@ -6,6 +6,7 @@
 #       permissions:
 #         contents: read
 #       uses: overmindv/tests/.github/workflows/e2e.yml@main
+#       secrets: inherit   # обязательно: передаёт ORGANIZATION_READ_TOKEN внутрь workflow_call
 #       with:
 #         target_repo: users   # репозиторий, где произошло изменение
 #
