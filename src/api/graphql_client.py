@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import requests
@@ -66,6 +67,70 @@ class GraphQLClient:
 
                 raise HttpError(
                     f"GraphQL HTTP {response.status_code}",
+                    response=body,
+                    status_code=response.status_code,
+                )
+
+            data = check.gql_success_response(body, message=f"Операция {operation}")
+        return data or {}
+
+    def execute_upload(
+        self,
+        operation: str,
+        query: str,
+        variables: dict[str, Any],
+        file_map: dict[str, list[str]],
+        files: dict[str, tuple[str, bytes, str]],
+        token: str | None = None,
+    ) -> dict:
+        """Выполнить GraphQL-операцию с загрузкой файла (multipart-контракт).
+
+        Части запроса:
+        - `operations` — JSON `{query, variables}` (поле файла = null);
+        - `map` — JSON `{"0": ["variables.input.file"]}`;
+        - часть `0` — сам файл с filename и Content-Type.
+
+        :param operation: имя операции (для шага/подписи).
+        :param query: строка GraphQL (mutation).
+        :param variables: переменные запроса (поле-файл должно быть None).
+        :param file_map: сопоставление частей multipart с путями в variables.
+        :param files: {ключ_части: (filename, bytes, Content-Type)}.
+        :param token: JWT для Authorization: Bearer (опционально).
+        :raises HttpError: при HTTP-статусе >= 400 или errors в envelope.
+        """
+        with report.step("GraphQL upload: {operation}", operation=operation):
+            headers = {"Accept": "application/json"}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+
+            form: dict[str, Any] = {
+                "operations": (None, json.dumps({"query": query, "variables": variables})),
+                "map": (None, json.dumps(file_map)),
+            }
+            for key, (filename, content, content_type) in files.items():
+                form[key] = (filename, content, content_type)
+
+            response = self.session.post(
+                self.base_url + self.path,
+                files=form,
+                headers=headers,
+                timeout=self.timeout,
+            )
+
+            body = self._safe_json(response)
+            report.attach_json(
+                "graphql_upload_request",
+                {"query": query, "variables": variables, "map": file_map,
+                 "files": {k: {"filename": v[0], "bytes": len(v[1]), "content_type": v[2]}
+                           for k, v in files.items()}},
+            )
+            report.attach_json("graphql_response", body)
+
+            if response.status_code >= 400:
+                from src.http_error import HttpError
+
+                raise HttpError(
+                    f"GraphQL upload HTTP {response.status_code}",
                     response=body,
                     status_code=response.status_code,
                 )

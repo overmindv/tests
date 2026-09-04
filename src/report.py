@@ -20,14 +20,18 @@ HTML = allure.attachment_type.HTML
 
 
 @contextmanager
-def step(title: str, *args: Any, **kwargs: Any) -> AbstractContextManager[None]:
-    """Открыть Allure-шаг с заголовком. title поддерживает str.format-подстановку.
+def step(heading: str, *args: Any, **kwargs: Any) -> AbstractContextManager[None]:
+    """Открыть Allure-шаг с заголовком. heading поддерживает str.format-подстановку.
+
+    Первый параметр назван `heading` (а не `title`), чтобы kwarg-плейсхолдеры
+    вроде `title=`/`status=` не конфликтовали с именем параметра.
 
     Пример:
         with report.step("Проверяем создание задачи {}:", task_id):
             ...
     """
-    with allure.step(title, *args, **kwargs):
+    formatted = heading.format(*args, **kwargs)
+    with allure.step(formatted):
         yield
 
 
