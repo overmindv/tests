@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import inspect
 import time
 from typing import Any, Callable
 
@@ -15,15 +16,21 @@ from src import report
 
 
 def _step(title: str) -> Callable:
-    """Декоратор: оборачивает вызов в allure-шаг, форматируя title по kwargs.
+    """Декоратор: оборачивает вызов в allure-шаг, форматируя title по аргументам.
 
-    Все assert-функции принимают `message` как keyword-аргумент, поэтому
-    плейсхолдеры {message} (и прочие) подставляются из kwargs вызова.
+    assert-функции принимают `message` чаще всего позиционно
+    (`asserts.equal(a, b, "сообщение")`), поэтому связываем аргументы вызова
+    с именами параметров функции, чтобы плейсхолдеры вида {message}
+    подставлялись корректно (лишние kwargs `format` игнорирует).
     """
 
     def decorate(func: Callable) -> Callable:
+        param_names = list(inspect.signature(func).parameters)
+
         def wrapper(*args: Any, **kwargs: Any) -> Any:
-            formatted = title.format(**kwargs)
+            bound = dict(zip(param_names, args))
+            bound.update(kwargs)
+            formatted = title.format(**bound)
             with report.step(formatted):
                 return func(*args, **kwargs)
 

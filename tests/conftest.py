@@ -22,12 +22,14 @@ def api() -> Gateway:
 
 @pytest.fixture(scope="function")
 def admin(api: Gateway):
-    """Администратор: регистрация -> setAdmin -> повторный login (admin-токен)."""
-    email = generate.unique_email()
-    username = f"admin_{generate.uuid4()[:6]}"
-    ctx = api.create_admin(email, _PASSWORD, username)
+    """Администратор: bootstrap-суперпользователь (единственный, кто может ставить admin-роль).
+
+    Регистрация нового юзера + повышение собственным токеном невозможна, т.к.
+    `users.SetAdmin` требует прав админа/суперпользователя у вызывающего.
+    """
+    ctx = api.login_bootstrap_superuser()
     yield ctx
-    _safe_delete(api, ctx)
+    # bootstrap-суперпользователя нельзя удалять (users блокирует удаление суперпользователя).
 
 
 @pytest.fixture(scope="function")

@@ -28,6 +28,16 @@ class Config:
     SERVICE_READY_ATTEMPTS: int = env.get_int("SERVICE_READY_ATTEMPTS", 30)
     SERVICE_READY_SLEEP: int = env.get_int("SERVICE_READY_SLEEP", 2)
 
+    # Bootstrap-суперпользователь users-сервиса (сеется при старте стека из infra).
+    # Используется фикстурой admin для admin-операций. Значения по умолчанию
+    # совпадают с `infra/.env.example`, в CI/локально переопределяются в tests/.env.
+    BOOTSTRAP_SUPERUSER_EMAIL: str = env.get("BOOTSTRAP_SUPERUSER_EMAIL", "admin@overmindv.com")  # type: ignore[assignment]
+    BOOTSTRAP_SUPERUSER_USERNAME: str = env.get("BOOTSTRAP_SUPERUSER_USERNAME", "superadmin")  # type: ignore[assignment]
+    BOOTSTRAP_SUPERUSER_PASSWORD: str = env.get(  # type: ignore[assignment]
+        "BOOTSTRAP_SUPERUSER_PASSWORD",
+        "98754dd033b152bb4a887141990259624f2861a792d86e33ecb0b7705d87a20a",
+    )
+
     # Инфраструктура pytest (пробрасываются в addopts в CI).
     PYTEST_NUM_WORKERS: int = env.get_int("PYTEST_NUM_WORKERS", 0)
     PYTEST_RERUNS: int = env.get_int("PYTEST_RERUNS", 2)
