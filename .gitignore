@@ -32,3 +32,4 @@ artifacts/
 .logs/
 
 # AI
+.codegraph/
