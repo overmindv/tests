@@ -1,0 +1,96 @@
+# Независимый browser smoke: frontend и tests располагаются рядом, как в e2e.yml.
+# Для отдельного clone tests локально: клонировать overmindv/frontend в ../frontend,
+# выполнить там npm ci, затем в tests — make simulation-setup simulation-local.
+# Публичный frontend доступен с GITHUB_TOKEN. Для приватного нужен существующий
+# ORGANIZATION_READ_TOKEN с contents:read только на overmindv/frontend.
+# На fork PR секрет не выдаётся: приватный frontend checkout завершится ошибкой;
+# повторять такой прогон следует в доверенной ветке, без pull_request_target.
+name: User simulation smoke
+
+on:
+  pull_request:
+    paths:
+      - user-simulation/**
+      - Makefile
+      - .github/workflows/user-simulation.yml
+  push:
+    paths:
+      - user-simulation/**
+      - Makefile
+      - .github/workflows/user-simulation.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: user-simulation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  browser-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Checkout текущего PR/push, а не tests@main.
+      - name: Checkout tests
+        uses: actions/checkout@v4
+        with:
+          path: workspace/tests
+          persist-credentials: false
+
+      - name: Checkout frontend
+        uses: actions/checkout@v4
+        with:
+          repository: overmindv/frontend
+          path: workspace/frontend
+          token: ${{ secrets.ORGANIZATION_READ_TOKEN || github.token }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            workspace/frontend/package-lock.json
+            workspace/tests/user-simulation/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: workspace/frontend
+        run: npm ci
+
+      - name: Install browser harness dependencies
+        working-directory: workspace/tests/user-simulation
+        run: npm ci
+
+      - name: Install Chromium and system dependencies
+        working-directory: workspace/tests/user-simulation
+        run: npx playwright install --with-deps chromium
+
+      - name: Check harness TypeScript
+        working-directory: workspace/tests
+        run: make simulation-check
+
+      - name: Verify failure artifacts redact credentials
+        working-directory: workspace/tests
+        run: make simulation-privacy
+
+      # Только @smoke: GraphQL намеренно прерывается fault fixture.
+      # Docker, production credentials и @live здесь не используются.
+      - name: Run offline UI smoke on laptop and phone
+        working-directory: workspace/tests
+        run: make simulation-local
+
+      - name: Upload browser smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: user-simulation-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            workspace/tests/user-simulation/artifacts/report/
+            workspace/tests/user-simulation/artifacts/results/
+            workspace/tests/user-simulation/artifacts/results.json
+            workspace/tests/user-simulation/artifacts/privacy/
+          if-no-files-found: warn
+          retention-days: 7

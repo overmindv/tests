@@ -73,3 +73,41 @@ ci: setup up test allure
 ## help: показать справку по таргетам
 help:
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/## //' | column -t -s ':'
+
+# Браузерная симуляция пользователей — отдельна от существующего pytest e2e.
+SIMULATION_DIR := user-simulation
+.PHONY: simulation-setup simulation-list simulation-smoke simulation-local simulation-live simulation-report
+
+## simulation-setup: установить фиксированные npm-зависимости и Chromium
+simulation-setup:
+	cd $(SIMULATION_DIR) && npm ci && npx playwright install chromium
+
+## simulation-list: показать сценарии и устройства без запуска браузера
+simulation-list:
+	cd $(SIMULATION_DIR) && npm run test:list
+
+## simulation-smoke: UI smoke на SIM_BASE_URL (GraphQL намеренно недоступен)
+simulation-smoke:
+	cd $(SIMULATION_DIR) && npm test
+
+## simulation-local: UI smoke с временным Vite на 127.0.0.1:5174
+simulation-local:
+	cd $(SIMULATION_DIR) && SIM_START_FRONTEND=1 npm test
+
+## simulation-live: настоящий UI journey на выделенном стеке и тестовых аккаунтах
+simulation-live:
+	cd $(SIMULATION_DIR) && npm run test:live
+
+## simulation-report: открыть HTML-отчёт последнего smoke-прогона
+simulation-report:
+	cd $(SIMULATION_DIR) && npm run report
+
+.PHONY: simulation-check
+## simulation-check: проверить TypeScript браузерных сценариев
+simulation-check:
+	cd $(SIMULATION_DIR) && npm run typecheck
+
+.PHONY: simulation-privacy
+## simulation-privacy: проверить все артефакты намеренных падений на утечку синтетических секретов
+simulation-privacy:
+	cd $(SIMULATION_DIR) && npm run test:privacy
