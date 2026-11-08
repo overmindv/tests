@@ -228,6 +228,7 @@ jobs:
           PYENV
 
       - name: Start real services and code executor
+        id: stack
         working-directory: workspace/infra
         env:
           GOPROXY: https://proxy.golang.org,direct
@@ -251,6 +252,20 @@ jobs:
             workspace/tests/ci/source-refs.json
             workspace/tests/ci/observed-source-refs.json
           if-no-files-found: warn
+
+      - name: Capture sanitized service diagnostics on failure
+        id: diagnostics
+        if: failure() && (steps.stack.outcome == 'failure' || steps.journeys.outcome == 'failure')
+        working-directory: workspace/tests
+        run: python scripts/capture_diagnostics.py --infra-env ../infra/.env --output artifacts/service-diagnostics.txt
+
+      - name: Upload sanitized failure diagnostics
+        if: failure() && steps.diagnostics.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-service-diagnostics
+          path: workspace/tests/artifacts/service-diagnostics.txt
+          if-no-files-found: error
 
       - name: Stop dedicated CI stack
         if: always()
