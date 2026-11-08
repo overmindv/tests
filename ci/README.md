@@ -1,18 +1,22 @@
 # Full-stack integration gate
 
-`.github/workflows/e2e.yml` runs on tests pull requests and manual dispatch. It
-checks out every dependency at the full commit in `source-refs.json`, starts a
-fresh Compose project with the `sandbox` and `gojudge` profiles, and executes all
-five API scenarios plus the real student/author browser journey on laptop and
-phone viewports. Existing per-service e2e callers are not enabled by this change.
+`.github/workflows/e2e.yml` runs harness/privacy checks on tests pull requests.
+The full reusable gate is invoked by the private recommendations repository. It
+loads dependencies at the full commits in `source-refs.json`, starts a fresh
+Compose project with `sandbox` and `gojudge`, and executes all five API scenarios
+plus the real student/author browser journey on laptop and phone viewports.
+Other per-service e2e callers are not enabled by this change.
 
 Update the manifest when a coordinated service change must be verified. A caller
 of the reusable workflow may explicitly override its own service with the caller
-SHA; all other checkouts stay pinned. The refs are an input snapshot, not a claim
+SHA; recommendations uses its caller SHA before private-source extraction. All
+other checkouts stay pinned. `observed-source-refs.json` in the evidence artifact
+records the actual Git HEADs, including tests/caller and the archive checksum. The refs are an input snapshot, not a claim
 that every run passed. The Actions result is the evidence for that exact snapshot.
 
-The `ORGANIZATION_READ_TOKEN` repository secret must read the private sibling
-repositories. The generated infra `.env` supplies bootstrap credentials directly
+The caller uses its own `GITHUB_TOKEN` for private recommendations; private sandbox
+source is verified from its committed snapshot as described below. No personal
+access token is installed. The generated infra `.env` supplies bootstrap credentials directly
 to the Python runner; passwords are never CLI arguments. Only evidence that passes
 the credential/JWT scan is uploaded. Playwright trace, HAR, video, and session
 storage remain disabled. Do not upload `.env` or local fixture files.
@@ -43,3 +47,21 @@ Recommendations — закрытый репозиторий, deploy keys зап�
 выполняются проверки harness/privacy/выбора тестов; полноценный результат ищется в
 recommendations Actions. Caller фиксирует tests_ref и workflow SHA; личные PAT в
 CI не добавляются.
+
+
+## Private sandbox source
+
+The recommendations caller owns an immutable `ci/vendor/sandbox.tar.gz` snapshot
+and `sandbox-source.json` manifest in its **private** repository. The archive is
+created with `git archive` from the committed sandbox ref; untracked or working
+changes are not included. Its manifest records `repository`, full `commit`, and
+SHA-256 of the archive bytes. This avoids persisting a broad cross-repository token
+or changing sandbox visibility. Never copy this archive into the public tests repo
+or upload it as test evidence.
+
+Before building, the tests workflow verifies the repository, requires the manifest
+commit to equal `ci/source-refs.json`'s sandbox pin, verifies SHA-256, and extracts
+with Python tarfile's `data` safety filter. A missing/mismatched snapshot fails the
+build. When sandbox changes, regenerate the archive+manifest in recommendations
+and update the pin together. This temporary duplication can be removed when a
+scoped cross-repository CI credential is available.
