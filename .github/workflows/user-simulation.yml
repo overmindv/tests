@@ -12,11 +12,13 @@ on:
     paths:
       - user-simulation/**
       - Makefile
+      - ci/source-refs.json
       - .github/workflows/user-simulation.yml
   push:
     paths:
       - user-simulation/**
       - Makefile
+      - ci/source-refs.json
       - .github/workflows/user-simulation.yml
   workflow_dispatch:
 
@@ -39,10 +41,24 @@ jobs:
           path: workspace/tests
           persist-credentials: false
 
+      - name: Read pinned frontend commit
+        id: refs
+        working-directory: workspace/tests
+        run: |
+          python3 - <<'PYREF'
+          import json, os, re
+          ref = json.load(open('ci/source-refs.json'))['frontend']
+          if not re.fullmatch(r'[0-9a-f]{40}', ref):
+              raise SystemExit('Expected full frontend commit SHA')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              print(f'frontend={ref}', file=output)
+          PYREF
+
       - name: Checkout frontend
         uses: actions/checkout@v4
         with:
           repository: overmindv/frontend
+          ref: ${{ steps.refs.outputs.frontend }}
           path: workspace/frontend
           token: ${{ secrets.ORGANIZATION_READ_TOKEN || github.token }}
           persist-credentials: false

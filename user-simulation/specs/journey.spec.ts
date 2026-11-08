@@ -23,7 +23,7 @@ test('@live автор публикует тест; студент исправ�
     await test.step('Автор: дублирует вариант, исправляет ошибку, сохраняет черновик', async () => {
       await signIn(page, process.env.SIM_ADMIN_EMAIL!, process.env.SIM_ADMIN_PASSWORD!);
       await page.goto('/admin/tasks/new');
-      await expect(page.getByRole('heading', { name: 'Создание теста' })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Создание задачи' })).toBeVisible();
       await page.getByLabel('Название', { exact: true }).fill(title);
       await page.getByLabel('Условие', { exact: true }).fill('Сколько будет 2 + 2? Выберите один ответ.');
       await page.getByRole('textbox', { name: 'Вариант 1', exact: true }).fill('4');
@@ -37,7 +37,7 @@ test('@live автор публикует тест; студент исправ�
       await page.getByRole('button', { name: 'Создать черновик' }).click();
       await expect(page).toHaveURL(/\/admin\/tasks\/[0-9a-f-]{36}$/);
       taskId = new URL(page.url()).pathname.split('/').at(-1);
-      await expect(page.getByRole('heading', { name: 'Новая версия теста' })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Новая версия задачи' })).toBeVisible();
     });
     await test.step('Автор: публикует созданный черновик', async () => {
       await page.goto('/admin/tasks');
