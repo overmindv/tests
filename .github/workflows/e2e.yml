@@ -1,172 +1,241 @@
-# Переиспользуемый e2e-воркфлоу системы overmindv.
-#
-# ВНИМАНИЕ: E2E-CI в данный момент ОТКЛЮЧЁН в CI всех сервисов (нет ресурсов
-# на прогон e2e-тестов) — джобы `e2e` закомментированы в ci.yml/ci.yaml сервисов.
-# Перед повторным включением также нужно вернуть в этот workflow чекауты
-# `feed` и `sandbox` (без них docker-compose не поднимется).
-#
-# Вызывается из CI сервисов (users/tasks/api-gateway/...) при пуше/PR:
-#   jobs:
-#     e2e:
-#       permissions:
-#         contents: read
-#       uses: overmindv/tests/.github/workflows/e2e.yml@main
-#       secrets: inherit   # обязательно: передаёт ORGANIZATION_READ_TOKEN внутрь workflow_call
-#       with:
-#         target_repo: users   # репозиторий, где произошло изменение
-#
-# При вызове поднимает весь стек (docker-compose из overmindv/infra, который
-# собирает сервисы из соседних каталогов ../users, ../tasks, ...), прогоняет
-# e2e-тесты и выкладывает allure-результаты артефактом.
 name: e2e tests
 
 on:
+  pull_request:
+  workflow_dispatch:
   workflow_call:
     inputs:
-      target_repo:
-        description: "Репозиторий-источник изменения (users/tasks/api-gateway/entities/task-hunter/frontend)"
-        required: true
+      tests_ref:
+        description: Exact tests commit used by the reusable integration gate
+        required: false
+        default: "main"
         type: string
-  # Ручной запуск (Actions -> Run workflow), например, для полного прогона по tests@main.
-  workflow_dispatch:
-    inputs:
       target_repo:
-        description: "Репозиторий-источник изменения (пусто = дефолтные ветки всех сервисов)"
+        description: Optional service checkout replaced by caller SHA
         required: false
         default: ""
         type: string
 
-jobs:
-  e2e:
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    steps:
-      - name: Create workspace
-        run: mkdir -p workspace
+permissions:
+  contents: read
 
-      # --- Инфраструктура и тесты ---
-      - name: Checkout tests
+concurrency:
+  group: e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-harness:
+    if: github.repository == 'overmindv/tests'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pytest unit_tests
+      - run: python -m pytest --collect-only -m e2e
+      - run: npm --prefix user-simulation ci && cd user-simulation && npx playwright install --with-deps chromium
+      - run: make simulation-check simulation-privacy
+
+  e2e:
+    # Private recommendations is read using its own caller GITHUB_TOKEN.
+    # The full gate runs in recommendations CI; tests PR retains local harness checks.
+    if: github.repository == 'overmindv/recommendations'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout tests under review
         uses: actions/checkout@v4
         with:
           repository: overmindv/tests
+          ref: ${{ inputs.tests_ref }}
           path: workspace/tests
-          token: ${{ secrets.ORGANIZATION_READ_TOKEN }}
+          token: ${{ secrets.ORGANIZATION_READ_TOKEN || github.token }}
+
+      - name: Load tested service refs
+        id: refs
+        working-directory: workspace/tests
+        run: |
+          python3 - <<'PYREFS'
+          import json, os, re
+          refs = json.load(open('ci/source-refs.json'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              for name, ref in refs.items():
+                  if not re.fullmatch(r'[0-9a-f]{40}', ref):
+                      raise SystemExit(f'{name}: expected full commit SHA')
+                  print(f'{name}={ref}', file=output)
+          PYREFS
 
       - name: Checkout infra
         uses: actions/checkout@v4
         with:
           repository: overmindv/infra
+          ref: ${{ steps.refs.outputs['infra'] }}
           path: workspace/infra
-          token: ${{ secrets.ORGANIZATION_READ_TOKEN }}
-
-      # --- Сервисы (по умолчанию берём их main) ---
-      - name: Checkout api-gateway
-        uses: actions/checkout@v4
-        with:
-          repository: overmindv/api-gateway
-          path: workspace/api-gateway
-          token: ${{ secrets.ORGANIZATION_READ_TOKEN }}
+          token: ${{ secrets.ORGANIZATION_READ_TOKEN || github.token }}
 
       - name: Checkout users
         uses: actions/checkout@v4
         with:
           repository: overmindv/users
+          ref: ${{ steps.refs.outputs['users'] }}
           path: workspace/users
-          token: ${{ secrets.ORGANIZATION_READ_TOKEN }}
-
-      - name: Checkout tasks
-        uses: actions/checkout@v4
-        with:
-          repository: overmindv/tasks
-          path: workspace/tasks
-          token: ${{ secrets.ORGANIZATION_READ_TOKEN }}
+          token: ${{ secrets.ORGANIZATION_READ_TOKEN || github.token }}
 
       - name: Checkout entities
         uses: actions/checkout@v4
         with:
           repository: overmindv/entities
+          ref: ${{ steps.refs.outputs['entities'] }}
           path: workspace/entities
-          token: ${{ secrets.ORGANIZATION_READ_TOKEN }}
+          token: ${{ secrets.ORGANIZATION_READ_TOKEN || github.token }}
+
+      - name: Checkout tasks
+        uses: actions/checkout@v4
+        with:
+          repository: overmindv/tasks
+          ref: ${{ steps.refs.outputs['tasks'] }}
+          path: workspace/tasks
+          token: ${{ secrets.ORGANIZATION_READ_TOKEN || github.token }}
 
       - name: Checkout task-hunter
         uses: actions/checkout@v4
         with:
           repository: overmindv/task-hunter
+          ref: ${{ steps.refs.outputs['task-hunter'] }}
           path: workspace/task-hunter
-          token: ${{ secrets.ORGANIZATION_READ_TOKEN }}
+          token: ${{ secrets.ORGANIZATION_READ_TOKEN || github.token }}
 
-      - name: Checkout frontend
+      - name: Checkout recommendations
         uses: actions/checkout@v4
         with:
-          repository: overmindv/frontend
-          path: workspace/frontend
-          token: ${{ secrets.ORGANIZATION_READ_TOKEN }}
+          repository: overmindv/recommendations
+          ref: ${{ steps.refs.outputs['recommendations'] }}
+          path: workspace/recommendations
+          token: ${{ secrets.ORGANIZATION_READ_TOKEN || github.token }}
 
-      - name: Checkout media
+      - name: Checkout sandbox
         uses: actions/checkout@v4
         with:
-          repository: overmindv/media
-          path: workspace/media
-          token: ${{ secrets.ORGANIZATION_READ_TOKEN }}
+          repository: overmindv/sandbox
+          ref: ${{ steps.refs.outputs['sandbox'] }}
+          path: workspace/sandbox
+          token: ${{ secrets.ORGANIZATION_READ_TOKEN || github.token }}
 
       - name: Checkout content
         uses: actions/checkout@v4
         with:
           repository: overmindv/content
+          ref: ${{ steps.refs.outputs['content'] }}
           path: workspace/content
-          token: ${{ secrets.ORGANIZATION_READ_TOKEN }}
+          token: ${{ secrets.ORGANIZATION_READ_TOKEN || github.token }}
 
-      # --- Источник изменения переопределяем на коммит пуша ---
-      - name: Checkout target repo at pushed ref
+      - name: Checkout media
+        uses: actions/checkout@v4
+        with:
+          repository: overmindv/media
+          ref: ${{ steps.refs.outputs['media'] }}
+          path: workspace/media
+          token: ${{ secrets.ORGANIZATION_READ_TOKEN || github.token }}
+
+      - name: Checkout feed
+        uses: actions/checkout@v4
+        with:
+          repository: overmindv/feed
+          ref: ${{ steps.refs.outputs['feed'] }}
+          path: workspace/feed
+          token: ${{ secrets.ORGANIZATION_READ_TOKEN || github.token }}
+
+      - name: Checkout frontend
+        uses: actions/checkout@v4
+        with:
+          repository: overmindv/frontend
+          ref: ${{ steps.refs.outputs['frontend'] }}
+          path: workspace/frontend
+          token: ${{ secrets.ORGANIZATION_READ_TOKEN || github.token }}
+
+      - name: Checkout api-gateway
+        uses: actions/checkout@v4
+        with:
+          repository: overmindv/api-gateway
+          ref: ${{ steps.refs.outputs['api-gateway'] }}
+          path: workspace/api-gateway
+          token: ${{ secrets.ORGANIZATION_READ_TOKEN || github.token }}
+
+      - name: Checkout optional caller service
         if: inputs.target_repo != ''
         uses: actions/checkout@v4
         with:
           repository: overmindv/${{ inputs.target_repo }}
           ref: ${{ github.sha }}
           path: workspace/${{ inputs.target_repo }}
-          token: ${{ secrets.ORGANIZATION_READ_TOKEN }}
+          token: ${{ secrets.ORGANIZATION_READ_TOKEN || github.token }}
 
-      # --- Python / тесты ---
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
 
-      - name: Install dependencies
+      - name: Install API and browser dependencies
         working-directory: workspace/tests
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install -r requirements.txt
+          npm --prefix user-simulation ci --registry=https://registry.npmjs.org
+          cd user-simulation && npx playwright install --with-deps chromium
 
-      # --- Стек ---
-      - name: Prepare infra .env
-        working-directory: workspace/infra
-        run: |
-          if [ -x scripts/prepare-env.sh ]; then
-            ./scripts/prepare-env.sh .env || true
-          fi
-          test -f .env || echo "JWT_SECRET=ci-test-secret" > .env
-
-      - name: Bring up stack
-        working-directory: workspace/infra
-        run: docker compose --env-file .env -f docker-compose.yml up --build -d --wait --wait-timeout 600
-
-      - name: Run e2e tests
+      - name: Verify reporting privacy and browser types
         working-directory: workspace/tests
         run: |
-          set -euxo pipefail
-          BASE_URL=http://localhost:8081 \
-          python -m pytest -m "e2e and not skip_ci" -n "${PYTEST_NUM_WORKERS:-2}" --maxfail=5
+          python -m pytest unit_tests
+          make simulation-check simulation-privacy
 
-      - name: Upload Allure results
-        if: always()
+      - name: Prepare dedicated stack
+        working-directory: workspace/infra
+        run: |
+          ./scripts/prepare-env.sh .env
+          python3 - <<'PYENV'
+          from pathlib import Path
+          path = Path('.env')
+          updates = {'SANDBOX_EXECUTOR_TYPE': 'gojudge', 'SANDBOX_FEATURE_FAKE_EXECUTOR': 'false',
+                     'SANDBOX_FEATURE_GOJUDGE_EXECUTOR': 'true', 'MEDIA_TOOL_PLATFORM': 'linux/amd64',
+                     'CORS_ORIGINS': 'http://127.0.0.1:3000,http://localhost:3000'}
+          lines = path.read_text().splitlines()
+          path.write_text('\n'.join(line.partition('=')[0] + '=' + updates.pop(line.partition('=')[0])
+                                     if line.partition('=')[0] in updates else line for line in lines)
+                          + '\n' + '\n'.join(k + '=' + v for k, v in updates.items()) + '\n')
+          PYENV
+
+      - name: Start real services and code executor
+        working-directory: workspace/infra
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+          COMPOSE_PARALLEL_LIMIT: "2"
+        run: docker compose --profile sandbox --profile gojudge up --build -d --wait --wait-timeout 600
+
+      - name: API and browser student/author journeys
+        id: journeys
+        working-directory: workspace/tests
+        run: python scripts/run_e2e.py --infra-env ../infra/.env
+
+      - name: Upload sanitized test evidence
+        if: always() && steps.journeys.outputs.evidence_safe == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: allure-results
-          path: workspace/tests/allure-results/
+          name: e2e-evidence
+          path: |
+            workspace/tests/allure-results/
+            workspace/tests/user-simulation/artifacts/live-results/
+            workspace/tests/user-simulation/artifacts/live-results.json
+            workspace/tests/ci/source-refs.json
           if-no-files-found: warn
 
-      - name: Tear down stack
+      - name: Stop dedicated CI stack
         if: always()
         working-directory: workspace/infra
-        run: docker compose --env-file .env -f docker-compose.yml down --remove-orphans
+        run: docker compose --profile sandbox --profile gojudge down --remove-orphans

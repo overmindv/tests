@@ -15,7 +15,7 @@ import pytest
 
 from src import asserts, report
 
-pytestmark = pytest.mark.e2e and pytest.mark.tasks
+pytestmark = [pytest.mark.e2e, pytest.mark.tasks]
 
 
 @allure.title("Задача: создание, публикация, решение с верным и неверным ответом, история")
@@ -128,44 +128,26 @@ def _completed_or_none(api, user, submission_id):
     return submission if submission.status == "completed" else None
 
 
-@allure.title("Реально собранная по ссылке задача -> решение кодом -> вердикт sandbox")
-def test_real_collected_task_solve_by_code_via_sandbox(api, admin, regular_user):
-    """Полный цикл на реально полученной по ссылке задаче.
+@allure.title("Реальное исполнение Python: корректный DP принят, неверный код отклонён")
+def test_programming_solution_is_executed_and_wrong_code_rejected(api, admin, regular_user):
+    """Изолированный программный сценарий без заранее загруженных задач и внешней сети.
 
-    Задача «Ход конём» (CodeRun) реально собрана через task-hunter по прямой
-    ссылке и одобрена. Тест: запускаем сбор по ссылке, находим в системе эту
-    реальную задачу, публикуем её (принятие), пользователь отправляет верное
-    Python-решение, которое уходит по Кафке в sandbox и возвращается обратно
-    с вердиктом и исполненными тестами.
+    Автор создаёт и публикует задачу; настоящий gojudge исполняет два Python-файла.
+    Примеры — публичный контракт задачи. Верный DP принят, print(0) отклонён.
+    Сбор по ссылке проверяется отдельным сценарием только до создания джобы;
+    этот тест не заявляет coverage внешнего парсинга или модерации кандидатов.
     """
-    from src.api.gateway import Task
-
-    knight_url = "https://coderun.yandex.ru/problem/knight-move"
-
-    with report.step("1. Реальная сборка задачи по ссылке (CodeRun «Ход конём»)"):
-        job = api.start_task_collection(admin, website_urls=[knight_url])
-        asserts.equal(job["status"], "queued", "Джоба сбора задач запущена в статусе queued")
-
-    with report.step("2. Находим реально собранную задачу «Ход конём» в системе"):
-        programming = api.admin_it_tasks(admin, task_type="programming")
-        knight = next(
-            (
-                t for t in programming
-                if any(e.get("input") == "3 2" and e.get("output") == "1" for e in (t.get("examples") or []))
-            ),
-            None,
+    with report.step("1. Автор создаёт программную задачу с публичными примерами"):
+        task = api.create_task(
+            admin, title="Число путей коня", task_type="programming", difficulty="easy", options=[],
+            statement="На доске n × m конь идёт из (0, 0) в (n-1, m-1), только на (2, 1) или (1, 2). Выведите число путей.",
+            examples=[{"input": "3 2", "output": "1", "explanation": "Один ход"},
+                      {"input": "4 4", "output": "2", "explanation": "Два порядка ходов"},
+                      {"input": "1 1", "output": "1", "explanation": "Начальная клетка"}],
         )
-        asserts.is_not_empty(knight, "В системе есть реально собранная задача «Ход конём»")
-        task = Task.model_validate(knight)
-        asserts.is_not_empty(task.taskVersionId, "У реальной задачи есть версия")
-        asserts.equal(task.taskType, "programming", "Задача — программная (решение кодом)")
+        api.change_task_status(admin, task.id, "published")
 
-    with report.step("3. Принятие: публикуем реальную задачу"):
-        if task.status != "published":
-            published = api.change_task_status(admin, task.id, "published")
-            asserts.equal(published["status"], "published", "Задача опубликована (принята)")
-
-    with report.step("4. Пользователь отправляет верное решение на Python (DP коня)"):
+    with report.step("2. Студент отправляет корректный Python DP"):
         solution = (
             "n, m = map(int, input().split())\n"
             "dp = [[0] * m for _ in range(n)]\n"
@@ -176,24 +158,19 @@ def test_real_collected_task_solve_by_code_via_sandbox(api, admin, regular_user)
             "        if i + 1 < n and j + 2 < m: dp[i + 1][j + 2] += dp[i][j]\n"
             "print(dp[n - 1][m - 1])\n"
         )
-        sub = api.submit_code(regular_user, task, solution, filename="solve.py")
-        asserts.equal(sub.status, "queued", "Посылка поставлена в очередь (файл ушёл по Кафке в sandbox)")
-        asserts.equal(sub.verdict, None, "Вердикт ещё не вынесен, пока решение исполняется")
-
-    with report.step("5. Ожидаем вердикт от sandbox (Кафка -> tasks)"):
-        code = asserts.wait(
-            lambda: _completed_or_none(api, regular_user, sub.id),
-            timeout=120.0,
-            interval=2.0,
-            message="Кодовая посылка должна завершиться (status=completed)",
+        submitted = api.submit_code(regular_user, task, solution, filename="solve.py")
+        correct = asserts.wait(
+            lambda: _completed_or_none(api, regular_user, submitted.id), timeout=120, interval=2,
+            message="Корректный код должен завершиться через Kafka и gojudge",
         )
-        asserts.equal(code.status, "completed", "Посылка завершилась: результат вернулся в tasks")
+        asserts.equal(correct.verdict, "accepted", "Реальный исполнитель принимает верный DP")
+        asserts.equal(len(correct.tests), 3, "Исполнены все три публичных примера")
 
-    with report.step("6. Показ результата: вердикт и исполненные тесты"):
-        report.attach_json("code_submission_result", code.model_dump(mode="json"))
-        # Сверка выполнена: sandbox вернул результат ровно по каждому тесту.
-        # (В dev-стеке стоит fake-исполнитель: он пишет в stdout эхо входа, поэтому
-        #  для не-эхо задач вердикт = wrong_answer. Под настоящим gojudge верное
-        #  решение, которое реально исполняется, даст accepted.)
-        asserts.is_in(code.verdict, {"accepted", "wrong_answer"}, "Вынесен вердикт (результат сверки с ответами)")
-        asserts.is_not_empty(code.tests, "Есть исполненные тесты (показан результат по каждому тесту)")
+    with report.step("3. Студент отправляет неверный код и получает wrong_answer"):
+        submitted = api.submit_code(regular_user, task, "print(0)\n", filename="wrong.py")
+        wrong = asserts.wait(
+            lambda: _completed_or_none(api, regular_user, submitted.id), timeout=120, interval=2,
+            message="Неверный код должен завершиться через Kafka и gojudge",
+        )
+        asserts.equal(wrong.verdict, "wrong_answer", "Неверный результат не принимается")
+        asserts.is_not_empty(wrong.tests, "Возвращены результаты выполнения публичных примеров")
