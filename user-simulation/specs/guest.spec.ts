@@ -21,7 +21,14 @@ test('@smoke студент: находит задачи через меню и 
     await expect(page.getByRole('combobox', { name: 'Формат' })).toHaveValue('');
     await expect(page.getByRole('combobox', { name: 'Сложность' })).toHaveValue('');
     await expect(page.getByRole('textbox', { name: 'Поиск задач' })).toHaveValue('');
-    await expect(page.getByRole('alert')).toContainText('Попробуйте ещё раз');
+    // Task results and topic options fail independently; check the task's own recovery block.
+    const retryTasks = page.getByRole('button', { name: 'Повторить', exact: true });
+    const taskError = page.locator('.content-state').filter({ has: retryTasks }).getByRole('alert');
+    await expect(taskError).toContainText('Попробуйте ещё раз');
+    await expect(page.getByRole('button', { name: 'Повторить загрузку тем', exact: true })).toBeVisible();
+    await retryTasks.click();
+    await expect(taskError).toContainText('Попробуйте ещё раз');
+    await expect(retryTasks).toBeEnabled();
     await expectNoHorizontalOverflow(page);
     await capture(page, testInfo, 'tasks-unavailable');
   });
