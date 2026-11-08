@@ -3,7 +3,7 @@
 `.github/workflows/e2e.yml` runs harness/privacy checks on tests pull requests.
 The full reusable gate is invoked by the private recommendations repository. It
 loads dependencies at the full commits in `source-refs.json`, starts a fresh
-Compose project with `sandbox` and `gojudge`, and executes all five API scenarios
+Compose project with `sandbox` and `gojudge`, and executes all six API scenarios
 plus the real student/author browser journey on laptop and phone viewports.
 Other per-service e2e callers are not enabled by this change.
 
@@ -65,3 +65,11 @@ with Python tarfile's `data` safety filter. A missing/mismatched snapshot fails 
 build. When sandbox changes, regenerate the archive+manifest in recommendations
 and update the pin together. This temporary duplication can be removed when a
 scoped cross-repository CI credential is available.
+
+
+The recommendation API scenario creates an active topic and two linked tasks via
+admin GraphQL, then checks the real `practicePlan` through the gateway. It asserts
+START_TOPIC initially, PRACTICE_GAP after a stored wrong answer, and exclusion of
+the solved task with NEXT_CHALLENGE after acceptance. An unavailable recommendation
+service cannot pass this scenario. This is API coverage; the browser journey still
+covers author publication and student answers/history, not the `/practice` page.
