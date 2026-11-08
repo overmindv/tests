@@ -43,6 +43,7 @@ class GraphQLClient:
         :raises HttpError: при HTTP-статусе >= 400 или наличии errors в envelope.
         """
         with report.step("GraphQL: {operation}", operation=operation):
+            report.redact({"token": token, "variables": variables})
             headers = {"Content-Type": "application/json", "Accept": "application/json"}
             if token:
                 headers["Authorization"] = f"Bearer {token}"
@@ -99,6 +100,7 @@ class GraphQLClient:
         :raises HttpError: при HTTP-статусе >= 400 или errors в envelope.
         """
         with report.step("GraphQL upload: {operation}", operation=operation):
+            report.redact({"token": token, "variables": variables})
             headers = {"Accept": "application/json"}
             if token:
                 headers["Authorization"] = f"Bearer {token}"

@@ -4,7 +4,7 @@ import pytest
 
 from src import asserts, generate
 
-pytestmark = pytest.mark.e2e and pytest.mark.auth
+pytestmark = [pytest.mark.e2e, pytest.mark.auth]
 
 
 @allure.title("Регистрация нового пользователя и повторный вход")

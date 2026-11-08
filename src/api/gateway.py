@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -75,13 +75,13 @@ class ITCodeSubmission(BaseModel):
 class AuthContext:
     """Контекст аутентифицированного пользователя (для подготовки данных)."""
 
-    token: str
+    token: str = field(repr=False)
     user_id: str
     email: str
     username: str
     is_admin: bool = False
     is_superuser: bool = False
-    password: str | None = None
+    password: str | None = field(default=None, repr=False)
 
 
 # ------------------------------- GraphQL-строки -------------------------------

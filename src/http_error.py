@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from src import report
+
 
 class HttpError(AssertionError):
     """Неуспешный ответ/поведение API.
@@ -20,8 +22,8 @@ class HttpError(AssertionError):
         response: Any | None = None,
         status_code: int | None = None,
     ) -> None:
-        self.message = message
-        self.response = response
+        self.response = report.redact(response)
+        self.message = report.redact(message)
         self.status_code = status_code
         super().__init__(self._render())
 
