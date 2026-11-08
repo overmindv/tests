@@ -59,11 +59,15 @@ test('@live автор публикует тест; студент исправ�
       await page.goto(`/tasks/${taskId}`);
       await expect(page.getByRole('heading', { name: title })).toBeVisible();
       await expect(page.getByRole('button', { name: 'Проверить ответ', exact: true })).toBeDisabled();
-      await page.getByRole('radio', { name: /5$/ }).check();
+      const wrongAnswer = page.getByRole('radio', { name: /5$/ });
+      await page.locator('label').filter({ has: wrongAnswer }).click();
+      await expect(wrongAnswer).toBeChecked();
       await page.getByRole('button', { name: 'Проверить ответ', exact: true }).click();
       await expect(page.getByRole('status').filter({ hasText: 'Пока не сходится' })).toBeVisible();
       await capture(page, testInfo, 'student-wrong-answer');
-      await page.getByRole('radio', { name: /4$/ }).check();
+      const rightAnswer = page.getByRole('radio', { name: /4$/ });
+      await page.locator('label').filter({ has: rightAnswer }).click();
+      await expect(rightAnswer).toBeChecked();
       await page.getByRole('button', { name: 'Проверить ответ', exact: true }).click();
       await expect(page.getByRole('status').filter({ hasText: 'Ответ принят' })).toBeVisible();
       await expectNoHorizontalOverflow(page);
@@ -87,7 +91,7 @@ test('@live автор публикует тест; студент исправ�
       }
     });
   } catch (error) {
-    await capture(page, testInfo, 'journey-failure-before-cleanup');
+    await capture(page, testInfo, 'journey-failure-before-cleanup').catch(() => undefined);
     throw error;
   } finally {
     if (taskId) {
