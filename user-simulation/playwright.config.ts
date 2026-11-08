@@ -24,6 +24,7 @@ export default defineConfig({
   ],
   use: {
     baseURL,
+    actionTimeout: 15_000,
     locale: 'ru-RU',
     timezoneId: 'Europe/Madrid',
     colorScheme: 'light',
