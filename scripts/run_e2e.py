@@ -11,8 +11,22 @@ from pathlib import Path
 import secrets
 import subprocess
 import sys
+import tempfile
 
 from dotenv import dotenv_values
+
+
+
+def write_private_fixture(path: Path, content: str) -> None:
+    """Replace a fixture atomically with a mode-600 file; never follow symlinks."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix='.browser-fixture-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as output:
+            output.write(content)
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def main() -> int:
@@ -44,9 +58,8 @@ def main() -> int:
                SIM_STUDENT_EMAIL=student_email, SIM_STUDENT_PASSWORD=password)
     if args.browser_env:
         import shlex
-        args.browser_env.parent.mkdir(parents=True, exist_ok=True)
-        with os.fdopen(os.open(args.browser_env, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), 'w') as output:
-            output.write('\n'.join(f'export {k}={shlex.quote(v)}' for k, v in env.items() if k.startswith('SIM_')) + '\n')
+        write_private_fixture(args.browser_env, '\n'.join(
+            f'export {k}={shlex.quote(v)}' for k, v in env.items() if k.startswith('SIM_')) + '\n')
     results = []
     try:
         results.append(subprocess.run([sys.executable, '-m', 'pytest', '-m', 'e2e and not skip_ci', '--maxfail=5'], env=env).returncode)
