@@ -67,7 +67,7 @@ make allure
 import allure, pytest
 from src import asserts, report
 
-pytestmark = pytest.mark.e2e and pytest.mark.tasks   # маркировка
+pytestmark = [pytest.mark.e2e, pytest.mark.tasks]   # маркировка
 
 @allure.title("Задача: создание, публикация, решение, история")
 def test_task_solve_wrong_then_right(api, admin, regular_user):
