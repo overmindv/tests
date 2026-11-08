@@ -48,3 +48,13 @@ def test_evidence_gate_rejects_leak_without_echoing_the_secret(tmp_path):
     assert 'artifact-private-password' not in str(error.value)
     path.write_text('{"error": "[REDACTED]"}')
     verify_evidence([tmp_path], ['artifact-private-password'])
+
+
+def test_service_diagnostics_redact_generated_secrets_and_unknown_jwts():
+    from scripts.capture_diagnostics import sanitize
+
+    log = 'password=generated-private-password token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.ABCDEFGHIJKLMNOP'
+    cleaned = sanitize(log, ['generated-private-password'])
+    assert 'generated-private-password' not in cleaned
+    assert 'eyJ' not in cleaned
+    assert cleaned == 'password=[REDACTED] token=[REDACTED]'
