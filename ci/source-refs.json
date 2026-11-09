@@ -1,0 +1,14 @@
+{
+  "infra": "ad94255851617c9d5aed97efd46144ea13232285",
+  "users": "fc7e552e22908682f16b22e3b615d6b6dbd8c35a",
+  "entities": "9e98d20248e494826295a1479fdb01675312824c",
+  "tasks": "93c61b7e6c6f2e4dd3e0fb41656339461147de10",
+  "task-hunter": "a9c3ce282b8779b446e40b4b68c5ae18a79cd28f",
+  "recommendations": "3aac2bb89316e39d6f23c3bfd786b94c0de78e2f",
+  "sandbox": "e326991a608af4e402e516e99b39aea649fcd14d",
+  "content": "03900035976545c35deafd6245d719c1b2ed6db9",
+  "media": "aa8a5f05f2cbaa0c9c79cd160dac13656714cbf7",
+  "feed": "a7bfe7925b145a126de623a33b0e1d45b2b40ec4",
+  "frontend": "4901c2a58ceb0d60cee2987d6b7d769bf008b193",
+  "api-gateway": "5d9f78dc19a3761767395c9a087e9236672d1819"
+}

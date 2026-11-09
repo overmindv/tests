@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -75,17 +75,24 @@ class ITCodeSubmission(BaseModel):
 class AuthContext:
     """Контекст аутентифицированного пользователя (для подготовки данных)."""
 
-    token: str
+    token: str = field(repr=False)
     user_id: str
     email: str
     username: str
     is_admin: bool = False
     is_superuser: bool = False
-    password: str | None = None
+    password: str | None = field(default=None, repr=False)
 
 
 # ------------------------------- GraphQL-строки -------------------------------
 _Q = {
+    "create_topic": "mutation CreateTopic($input: CreateTopicInput!) { createTopic(input: $input) { id title status } }",
+    "delete_topic": "mutation DeleteTopic($id: ID!) { deleteTopic(id: $id) }",
+    "delete_task": "mutation DeleteTask($id: ID!) { deleteITTask(id: $id) }",
+    "practice_plan": (
+        "query PracticePlan($topicIds: [ID!]!, $minutes: Int!) { practicePlan(topicIds: $topicIds, minutes: $minutes) {"
+        " policyVersion totalMinutes warnings items { taskId taskVersionId topicId reasonCode } } }"
+    ),
     "register": (
         "mutation Register($input: RegisterInput!) {"
         f" register(input: $input) {{ token expiresAt user {{ {_USER_FIELDS} }} }}"
@@ -241,6 +248,20 @@ class Gateway:
         """
         return self.login(config.BOOTSTRAP_SUPERUSER_EMAIL, config.BOOTSTRAP_SUPERUSER_PASSWORD)
 
+    def create_topic(self, admin: AuthContext, title: str) -> dict:
+        return self.gql.execute("create_topic", _Q["create_topic"],
+                                {"input": {"title": title, "status": "active"}}, token=admin.token)["createTopic"]
+
+    def delete_topic(self, admin: AuthContext, topic_id: str) -> bool:
+        return self.gql.execute("delete_topic", _Q["delete_topic"], {"id": topic_id}, token=admin.token)["deleteTopic"]
+
+    def delete_task(self, admin: AuthContext, task_id: str) -> bool:
+        return self.gql.execute("delete_task", _Q["delete_task"], {"id": task_id}, token=admin.token)["deleteITTask"]
+
+    def practice_plan(self, user: AuthContext, topic_ids: list[str], minutes: int = 60) -> dict:
+        return self.gql.execute("practice_plan", _Q["practice_plan"],
+                                {"topicIds": topic_ids, "minutes": minutes}, token=user.token)["practicePlan"]
+
     # ----------------------------------- Tasks --------------------------------
     def create_task(
         self,
@@ -253,6 +274,7 @@ class Gateway:
         tags: list[str] | None = None,
         examples: list[dict] | None = None,
         constraints: list[str] | None = None,
+        topic_id: str | None = None,
     ) -> Task:
         task_input: dict[str, Any] = {
             "title": title,
@@ -261,6 +283,8 @@ class Gateway:
             "difficulty": difficulty,
             "options": [{"text": text, "isCorrect": is_correct} for text, is_correct in options],
         }
+        if topic_id is not None:
+            task_input["topicId"] = topic_id
         if tags is not None:
             task_input["tags"] = tags
         if examples is not None:

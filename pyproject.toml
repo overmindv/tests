@@ -17,7 +17,7 @@ packages = ["src"]
 # tests/ — каталог тестов; pythonpath добавляет корень репо, чтобы `src` был импортируем.
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-v -l --disable-warnings --strict-markers"
+addopts = "-v --disable-warnings --strict-markers"
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]

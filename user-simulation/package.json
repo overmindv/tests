@@ -1,0 +1,22 @@
+{
+  "name": "overmindv-user-simulation",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.15.0"
+  },
+  "scripts": {
+    "test": "playwright test --grep @smoke",
+    "test:live": "SIM_LIVE=1 playwright test --grep @live",
+    "test:list": "playwright test --list",
+    "report": "playwright show-report artifacts/report",
+    "typecheck": "tsc --noEmit",
+    "test:privacy": "node scripts/check-privacy.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.0",
+    "@types/node": "22.20.5",
+    "typescript": "6.0.3"
+  }
+}
