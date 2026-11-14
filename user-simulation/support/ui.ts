@@ -41,5 +41,7 @@ export async function signIn(page: Page, email: string, password: string) {
   await page.getByLabel('Электронная почта').fill(email);
   await page.getByLabel('Пароль', { exact: true }).fill(password);
   await page.getByRole('button', { name: 'Войти', exact: true }).click();
-  await expect(page).toHaveURL(/\/profile$/);
+  // После входа допустим возврат на исходную защищённую страницу.
+  await expect(page.getByRole('button', { name: 'Меню профиля' })).toBeVisible();
+  await expect(page).not.toHaveURL(/\/login$/);
 }
