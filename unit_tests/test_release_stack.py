@@ -1,6 +1,7 @@
 """Release checks run without a registry or a shared test account."""
 
 import json
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -12,6 +13,7 @@ from src.configuration import config
 DIGEST = "sha256:" + "a" * 64
 REGISTRY = "ghcr.io/overmindv"
 PROJECT = "release-ci-aabbccddeeff"
+INFRA = Path("infra").resolve()
 CODE_SERVICES = ("api-gateway", "frontend", "feed", "gojudge", "sandbox")
 
 
@@ -33,7 +35,7 @@ def candidate():
 def services(release):
     services = {
         name: {"image": release.reference(name), "platform": "linux/amd64"}
-        for name in (*CODE_SERVICES, "kafka", "kafka-topics", "feed-migrate", "feed-postgres")
+        for name in (*CODE_SERVICES, "gojudge-compiler", "kafka", "kafka-topics", "feed-migrate", "feed-postgres")
     }
     for name, (_, port) in stack.PORTS.items():
         services[name]["ports"] = [{"host_ip": "127.0.0.1", "target": port}]
@@ -41,7 +43,10 @@ def services(release):
         "SANDBOX_EXECUTOR_TYPE": "gojudge",
         "SANDBOX_FEATURE_FAKE_EXECUTOR": "false",
         "SANDBOX_FEATURE_GOJUDGE_EXECUTOR": "true",
+        "SANDBOX_GOJUDGE_COMPILER_URL": "http://gojudge-compiler:5050",
     }
+    for name in stack.GOJUDGE_SERVICES:
+        services[name].update(privileged=True, networks={"sandbox-runtime": None})
     return services
 
 
@@ -55,7 +60,9 @@ def test_feeds_and_migrations_use_published_images():
     assert release.reference("feed-migrate") == release.images["feed"]
     assert release.reference("feed-postgres") == release.upstream["postgres"]
     assert release.labels("gojudge")["org.opencontainers.image.source"].endswith("/sandbox")
-    stack.verify_config(actual, release)
+    assert release.reference("gojudge-compiler") == release.images["gojudge"]
+    assert release.labels("gojudge-compiler") == release.labels("gojudge")
+    stack.verify_config(actual, release, INFRA)
 
 
 @pytest.mark.parametrize("bad_ref", ["ghcr.io/overmindv/feed:latest", f"example.test/feed@{DIGEST}", DIGEST])
@@ -80,7 +87,7 @@ def test_rejects_unsafe_resolved_compose(extra, reason):
     actual = services(release)
     actual["feed"].update(extra)
     with pytest.raises(ValueError, match=reason):
-        stack.verify_config(actual, release)
+        stack.verify_config(actual, release, INFRA)
 
 
 def test_resolved_fake_executor_is_rejected():
@@ -88,7 +95,73 @@ def test_resolved_fake_executor_is_rejected():
     actual = services(release)
     actual["sandbox"]["environment"]["SANDBOX_EXECUTOR_TYPE"] = "fake"
     with pytest.raises(ValueError, match="real gojudge"):
-        stack.verify_config(actual, release)
+        stack.verify_config(actual, release, INFRA)
+
+
+def test_compiler_cannot_be_omitted_when_configured():
+    release = stack.validate_manifest(candidate(), REGISTRY)
+    actual = services(release)
+    del actual["gojudge-compiler"]
+    with pytest.raises(ValueError, match="configured gojudge compiler"):
+        stack.verify_config(actual, release, INFRA)
+    del actual["sandbox"]["environment"]["SANDBOX_GOJUDGE_COMPILER_URL"]
+    stack.verify_config(actual, release, INFRA)
+
+
+def test_compiler_cannot_join_a_second_network():
+    release = stack.validate_manifest(candidate(), REGISTRY)
+    actual = services(release)
+    actual["gojudge-compiler"]["networks"]["default"] = None
+    with pytest.raises(ValueError, match="only the sandbox-runtime network"):
+        stack.verify_config(actual, release, INFRA)
+
+
+def test_kafka_topics_can_only_mount_the_checked_out_script(tmp_path):
+    release = stack.validate_manifest(candidate(), REGISTRY)
+    actual = services(release)
+    script = tmp_path / stack.KAFKA_TOPICS_SCRIPT
+    script.parent.mkdir(parents=True)
+    script.touch()
+    mount = {
+        "type": "bind",
+        "source": str(script),
+        "target": stack.KAFKA_TOPICS_TARGET,
+        "read_only": True,
+        "bind": {"create_host_path": False},
+    }
+    actual["kafka-topics"]["volumes"] = [mount]
+    overlay = stack.render_overlay(actual, release)
+    assert "source: ./scripts/kafka/topics.sh" in overlay
+    stack.verify_config(actual, release, tmp_path)
+    for change in ({"read_only": False}, {"source": str(script.parent)}, {"target": "/etc/topics.sh"}):
+        actual["kafka-topics"]["volumes"] = [{**mount, **change}]
+        with pytest.raises(ValueError, match="host access"):
+            stack.verify_config(actual, release, tmp_path)
+
+
+def test_compiler_cannot_use_a_separate_release_image():
+    manifest = candidate()
+    manifest["plan"]["images"]["gojudge-compiler"] = {"source": "sandbox"}
+    manifest["images"]["gojudge-compiler"] = f"{REGISTRY}/gojudge-compiler@{DIGEST}"
+    with pytest.raises(ValueError, match="expected repository"):
+        stack.validate_manifest(manifest, REGISTRY)
+
+
+def test_executor_network_must_be_internal(monkeypatch):
+    monkeypatch.setattr(
+        stack,
+        "command",
+        Mock(
+            return_value=json.dumps(
+                {
+                    "services": {},
+                    "networks": {"sandbox-runtime": {"name": f"{PROJECT}_sandbox-runtime"}},
+                }
+            )
+        ),
+    )
+    with pytest.raises(ValueError, match="must be an internal network"):
+        stack.config(["docker", "compose", "--project-name", PROJECT])
 
 
 def test_existing_external_volume_is_rejected(monkeypatch):
@@ -122,6 +195,7 @@ def test_running_image_drift_and_missing_migration_are_rejected():
     expected = {
         "feed": {"image": f"{REGISTRY}/feed@{DIGEST}", "id": DIGEST},
         "feed-migrate": {"image": f"{REGISTRY}/feed@{DIGEST}", "id": DIGEST},
+        "gojudge-compiler": {"image": f"{REGISTRY}/gojudge@{DIGEST}", "id": DIGEST},
     }
 
     def container(service, running):
@@ -131,10 +205,10 @@ def test_running_image_drift_and_missing_migration_are_rejected():
             "State": {"Running": running, "Status": "running" if running else "exited", "ExitCode": 0},
         }
 
-    instances = [container("feed", True), container("feed-migrate", False)]
+    instances = [container("feed", True), container("feed-migrate", False), container("gojudge-compiler", True)]
     assert stack.verify_running(instances, expected, PROJECT)["feed-migrate"]["state"] == "exited"
     with pytest.raises(ValueError, match="every service"):
-        stack.verify_running(instances[:1], expected, PROJECT)
+        stack.verify_running(instances[:2], expected, PROJECT)
     instances[0]["Image"] = "sha256:" + "b" * 64
     with pytest.raises(ValueError, match="does not match"):
         stack.verify_running(instances, expected, PROJECT)

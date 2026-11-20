@@ -23,14 +23,16 @@ jobs:
     env:
       COMPOSE_PARALLEL_LIMIT: '2'
     steps:
-      - name: Require private Overmindv caller
+      - name: Require manual release from Infra main
         id: guard
         env:
-          PRIVATE_CALLER: ${{ github.event.repository.private }}
-          CALLER_OWNER: ${{ github.repository_owner }}
+          CALLER_REPOSITORY: ${{ github.repository }}
+          CALLER_EVENT: ${{ github.event_name }}
+          CALLER_REF: ${{ github.ref }}
           TESTS_REF: ${{ inputs.tests_ref }}
         run: |
-          [[ "$PRIVATE_CALLER" == true && "$CALLER_OWNER" == overmindv ]]
+          [[ "$CALLER_REPOSITORY" == overmindv/infra && "$CALLER_EVENT" == workflow_dispatch ]]
+          [[ "$CALLER_REF" == refs/heads/main ]]
           [[ "$TESTS_REF" =~ ^[0-9a-f]{40}$ ]]
           printf 'RELEASE_RUN_DIR=%s/release-ci-%s\n' "$RUNNER_TEMP" "$(openssl rand -hex 6)" >> "$GITHUB_ENV"
           printf 'DOCKER_CONFIG=%s/release-docker\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
@@ -58,9 +60,17 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: overmindv/infra
-          ref: ${{ steps.release.outputs.infra_ref }}
+          ref: main
+          fetch-depth: 0
           path: workspace/infra
           persist-credentials: false
+      - name: Verify and select the release Infra commit
+        working-directory: workspace/infra
+        env:
+          INFRA_REF: ${{ steps.release.outputs.infra_ref }}
+        run: |
+          git merge-base --is-ancestor "$INFRA_REF" HEAD
+          git switch --detach "$INFRA_REF"
       - name: Install test dependencies
         working-directory: workspace/tests
         run: |

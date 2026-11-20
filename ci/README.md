@@ -2,13 +2,14 @@
 
 ## Release candidate
 
-`release-e2e.yml` is called from a private Overmindv repository before release.
+`release-e2e.yml` accepts a manual release run from `overmindv/infra` on `main`.
 Pass the contents of the published `release.json` from infra and the full
 `tests_ref` SHA used in the reusable workflow reference. The caller needs
 `contents: read`, `packages: read` and access to the candidate GHCR packages.
 No cross-repository source token is needed for Feed or Sandbox.
 
-The job checks out only tests and the infra SHA from the manifest. It creates
+The job checks out only tests and the infra SHA from the manifest. The infra
+SHA must be in the history of `main`. The job creates
 a new Compose project with credentials from `prepare-env.sh`; a failure does
 not fall back to a shared account. It removes build contexts, disables Kafka
 UI and publishes frontend and gateway on loopback only. The hosted runner

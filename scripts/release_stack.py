@@ -23,6 +23,9 @@ UPSTREAM = {
 }
 COMPOSE_ACTIONS = {"config", "pull", "up", "down", "ps"}
 ALIASES = {"kafka-topics": "kafka", "media-buckets": "minio"}
+GOJUDGE_SERVICES = {"gojudge", "gojudge-compiler"}
+KAFKA_TOPICS_SCRIPT = Path("scripts/kafka/topics.sh")
+KAFKA_TOPICS_TARGET = "/opt/overmind/kafka/topics.sh"
 PORTS = {"frontend": ("FRONTEND_PORT", 3000), "api-gateway": ("API_GATEWAY_PORT", 8081)}
 REQUIRED = {"sandbox", "gojudge", "feed", *PORTS}
 
@@ -50,6 +53,8 @@ class Release:
     manifest_sha: str
 
     def role(self, service):
+        if service in GOJUDGE_SERVICES:
+            return "gojudge"
         if service in self.images or service in self.upstream:
             return service
         if service in ALIASES:
@@ -89,7 +94,12 @@ def validate_manifest(manifest, registry):
     image_sources = {}
     for service, ref in images.items():
         repo, _, digest = ref.partition("@")
-        if not NAME.fullmatch(service) or repo != f"{registry}/{service}" or not DIGEST.fullmatch(digest):
+        if (
+            service == "gojudge-compiler"
+            or not NAME.fullmatch(service)
+            or repo != f"{registry}/{service}"
+            or not DIGEST.fullmatch(digest)
+        ):
             raise ValueError("service image must use the expected repository and manifest digest")
         image_sources[service] = plan["images"][service]["source"]
         if image_sources[service] != ("sandbox" if service == "gojudge" else service):
@@ -182,6 +192,8 @@ def config(args):
         for key, entry in document.get(section, {}).items():
             if entry.get("external") or entry.get("name") != f"{project}_{key}":
                 raise ValueError(f"Compose {section} must be private to the test project")
+    if not document.get("networks", {}).get("sandbox-runtime", {}).get("internal"):
+        raise ValueError("sandbox-runtime must be an internal network")
     return document["services"]
 
 
@@ -201,6 +213,7 @@ def render_overlay(services, manifest):
                 f"    image: {json.dumps(manifest.reference(service))}",
                 "    platform: linux/amd64",
                 "    build: !reset null",
+                "    pull_policy: !reset null",
             ]
         )
         if service in PORTS:
@@ -210,10 +223,35 @@ def render_overlay(services, manifest):
             lines.append("    ports: !reset []")
         if service == "task-hunter":
             lines.append("    volumes: !reset []")
+        if service == "kafka-topics" and any(m.get("type") == "bind" for m in services[service].get("volumes", [])):
+            lines.extend(
+                [
+                    "    volumes: !override",
+                    "      - type: bind",
+                    f"        source: ./{KAFKA_TOPICS_SCRIPT.as_posix()}",
+                    f"        target: {KAFKA_TOPICS_TARGET}",
+                    "        read_only: true",
+                    "        bind:",
+                    "          create_host_path: false",
+                ]
+            )
     return "\n".join(lines) + "\n"
 
 
-def verify_config(services, release):
+def approved_bind(service, mount, infra):
+    script = infra / KAFKA_TOPICS_SCRIPT
+    return (
+        service == "kafka-topics"
+        and mount.get("source") == str(script)
+        and mount.get("target") == KAFKA_TOPICS_TARGET
+        and mount.get("read_only") is True
+        and mount.get("bind", {}).get("create_host_path") is False
+        and script.resolve() == script
+        and script.is_file()
+    )
+
+
+def verify_config(services, release, infra):
     if "kafka-ui" in services or not release.images.keys() <= services.keys():
         raise ValueError("unexpected active Compose services")
     for name, service in services.items():
@@ -236,10 +274,15 @@ def verify_config(services, release):
             or service.get("ipc") == "host"
             or service.get("devices")
             or service.get("container_name")
-            or any(mount.get("type") == "bind" for mount in service.get("volumes", []))
-            or (name != "gojudge" and service.get("privileged"))
+            or any(
+                mount.get("type") == "bind" and not approved_bind(name, mount, infra)
+                for mount in service.get("volumes", [])
+            )
+            or (name not in GOJUDGE_SERVICES and service.get("privileged"))
         ):
             raise ValueError(f"{name}: host access is not allowed")
+        if name in GOJUDGE_SERVICES and set(service.get("networks", {})) != {"sandbox-runtime"}:
+            raise ValueError(f"{name}: expected only the sandbox-runtime network")
     sandbox = services["sandbox"].get("environment", {})
     if (
         sandbox.get("SANDBOX_EXECUTOR_TYPE") != "gojudge"
@@ -247,6 +290,10 @@ def verify_config(services, release):
         or sandbox.get("SANDBOX_FEATURE_GOJUDGE_EXECUTOR") != "true"
     ):
         raise ValueError("release e2e requires the real gojudge executor")
+    compiler_url = sandbox.get("SANDBOX_GOJUDGE_COMPILER_URL")
+    if "gojudge-compiler" in services or compiler_url:
+        if "gojudge-compiler" not in services or compiler_url != "http://gojudge-compiler:5050":
+            raise ValueError("release e2e requires the configured gojudge compiler")
 
 
 def inspect_images(services, release):
@@ -314,10 +361,10 @@ def main():
             prepare_env(infra, run_dir / "stack.env")
             overlay = render_overlay(config(compose(infra, run_dir, overlay=False)), release)
             (run_dir / "locked.compose.yml").write_text(overlay)
-            verify_config(config(locked), release)
+            verify_config(config(locked), release, infra)
             return
         services = config(locked)
-        verify_config(services, release)
+        verify_config(services, release, infra)
         print("Pull release digests", flush=True)
         command([*locked, "pull"], timeout=900)
         expected = inspect_images(services, release)
