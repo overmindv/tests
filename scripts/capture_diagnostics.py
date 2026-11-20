@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 from dotenv import dotenv_values
 
@@ -30,13 +30,20 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument('--infra-env', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--project-name')
+    parser.add_argument('--compose-file', type=Path, action='append', default=[])
     args = parser.parse_args()
     env_file = args.infra_env.resolve()
     secrets = [value for key, value in dotenv_values(env_file).items()
                if value and any(part in key.upper() for part in ('PASSWORD', 'SECRET', 'TOKEN'))]
     chunks = []
+    compose = ['docker', 'compose', '--env-file', str(env_file), '--profile', 'sandbox', '--profile', 'gojudge']
+    if args.project_name:
+        compose.extend(['--project-name', args.project_name])
+    for file in args.compose_file:
+        compose.extend(['-f', str(file.resolve())])
     for arguments in (['ps', '--all'], ['logs', '--no-color', '--tail', '100']):
-        command = ['docker', 'compose', '--env-file', str(env_file), '--profile', 'sandbox', '--profile', 'gojudge', *arguments]
+        command = [*compose, *arguments]
         result = subprocess.run(command, cwd=env_file.parent, text=True, capture_output=True, timeout=45)
         chunks.append(f"Command {' '.join(arguments)}; exit {result.returncode}\n" + result.stdout + result.stderr)
     cleaned = sanitize('\n'.join(chunks), secrets)

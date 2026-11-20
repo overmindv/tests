@@ -246,7 +246,11 @@ class Gateway:
         Это единственный пользователь с правами, достаточными для admin-операций
         и для назначения роли admin другим пользователям.
         """
-        return self.login(config.BOOTSTRAP_SUPERUSER_EMAIL, config.BOOTSTRAP_SUPERUSER_PASSWORD)
+        email = config.BOOTSTRAP_SUPERUSER_EMAIL
+        password = config.BOOTSTRAP_SUPERUSER_PASSWORD
+        if not email or not password or password == "__GENERATE__":
+            raise ValueError("Set BOOTSTRAP_SUPERUSER_EMAIL and BOOTSTRAP_SUPERUSER_PASSWORD")
+        return self.login(email, password)
 
     def create_topic(self, admin: AuthContext, title: str) -> dict:
         return self.gql.execute("create_topic", _Q["create_topic"],

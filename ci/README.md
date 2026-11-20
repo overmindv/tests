@@ -1,5 +1,40 @@
 # Full-stack integration gate
 
+## Release candidate
+
+`release-e2e.yml` is called from a private Overmindv repository before release.
+Pass the contents of the published `release.json` from infra and the full
+`tests_ref` SHA used in the reusable workflow reference. The caller needs
+`contents: read`, `packages: read` and access to the candidate GHCR packages.
+No cross-repository source token is needed for Feed or Sandbox.
+
+The job checks out only tests and the infra SHA from the manifest. It creates
+a new Compose project with credentials from `prepare-env.sh`; a failure does
+not fall back to a shared account. It removes build contexts, disables Kafka
+UI and publishes frontend and gateway on loopback only. The hosted runner
+starts the real go-judge profile. This is a disposable test stack, not a
+production isolation check.
+
+`observed-release.json` records the manifest checksum, tests and infra SHAs,
+the source SHAs checked against image labels, and the image ID and state of
+each container. Compose cannot rebuild any image or pull a tag during startup.
+API/browser results and failure diagnostics are published only after the
+credential scan, separately from the observed stack. The job never uploads
+the generated env file. A stack receipt alone does not mean the journeys passed.
+
+For a local config check with Docker Compose 2.24.4 or newer, use a checkout
+of the infra SHA from the manifest and a new run directory:
+
+```sh
+python3 scripts/release_stack.py render --manifest /path/to/release.json \
+  --infra /path/to/infra --run-dir /tmp/release-ci-0123456789ab
+```
+
+This does not pull images or start containers. Do not use a shared Docker host
+for the full release job.
+
+## Source-based integration
+
 `.github/workflows/e2e.yml` runs harness/privacy checks on tests pull requests.
 The full reusable gate is invoked by the private recommendations repository. It
 loads dependencies at the full commits in `source-refs.json`, starts a fresh
@@ -29,6 +64,9 @@ Local equivalent (after starting a dedicated stack with real gojudge):
 .venv/bin/python scripts/run_e2e.py --infra-env /path/to/dedicated/.env \
   --browser-env /path/outside/repo/live-fixtures.env
 ```
+
+For direct pytest runs, provide `BOOTSTRAP_SUPERUSER_EMAIL` and
+`BOOTSTRAP_SUPERUSER_PASSWORD` from that dedicated stack; there are no defaults.
 
 The deterministic programming scenario creates its own task, verifies three public
 examples with correct Python DP, and rejects incorrect code. It replaces a test
