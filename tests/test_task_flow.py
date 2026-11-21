@@ -19,10 +19,10 @@ pytestmark = [pytest.mark.e2e, pytest.mark.tasks]
 
 
 @allure.title("Задача: создание, публикация, решение с верным и неверным ответом, история")
-def test_task_solve_wrong_then_right(api, admin, regular_user):
+def test_task_solve_wrong_then_right(api, admin, regular_user, scenario_data):
     """Полный путь работоспособности: задача -> решение -> прогресс пользователя."""
     with report.step("1. Администратор создаёт задачу с двумя вариантами ответа"):
-        task = api.create_task(
+        task = scenario_data.task(
             admin,
             title="Чему равно 2 + 2?",
             statement="Выберите единственный верный вариант.",
@@ -60,7 +60,7 @@ def test_task_solve_wrong_then_right(api, admin, regular_user):
 
 
 @allure.title("Сбор по ссылке -> принятие -> решение кодом через sandbox (Кафка)")
-def test_task_collect_publish_solve_by_code_via_sandbox(api, admin, regular_user):
+def test_task_collect_publish_solve_by_code_via_sandbox(api, admin, regular_user, scenario_data):
     """Полный цикл платформы: сбор по ссылке, принятие задачи, решение Python-файлом.
 
     Шаги:
@@ -87,7 +87,7 @@ def test_task_collect_publish_solve_by_code_via_sandbox(api, admin, regular_user
     with report.step("2. Принятие задачи: создание и публикация программной задачи"):
         # В проде задача приходит из approveTaskCandidate (собранный кандидат).
         # В детерминированном ядре создаём программную задачу напрямую и публикуем её.
-        task = api.create_task(
+        task = scenario_data.task(
             admin,
             title="Эхо",
             statement="Выведите входную строку без изменений.",
@@ -129,7 +129,7 @@ def _completed_or_none(api, user, submission_id):
 
 
 @allure.title("Реальное исполнение Python: корректный DP принят, неверный код отклонён")
-def test_programming_solution_is_executed_and_wrong_code_rejected(api, admin, regular_user):
+def test_programming_solution_is_executed_and_wrong_code_rejected(api, admin, regular_user, scenario_data):
     """Изолированный программный сценарий без заранее загруженных задач и внешней сети.
 
     Автор создаёт и публикует задачу; настоящий gojudge исполняет два Python-файла.
@@ -138,7 +138,7 @@ def test_programming_solution_is_executed_and_wrong_code_rejected(api, admin, re
     этот тест не заявляет coverage внешнего парсинга или модерации кандидатов.
     """
     with report.step("1. Автор создаёт программную задачу с публичными примерами"):
-        task = api.create_task(
+        task = scenario_data.task(
             admin, title="Число путей коня", task_type="programming", difficulty="easy", options=[],
             statement="На доске n × m конь идёт из (0, 0) в (n-1, m-1), только на (2, 1) или (1, 2). Выведите число путей.",
             examples=[{"input": "3 2", "output": "1", "explanation": "Один ход"},
