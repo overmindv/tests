@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src import generate, report
 from src.api.graphql_client import GraphQLClient
+from src.api.learning import LearningGateway, PracticePlan
 from src.api.materials import MaterialGateway
 from src.configuration import config
 
@@ -113,10 +114,6 @@ _Q = {
     "create_topic": "mutation CreateTopic($input: CreateTopicInput!) { createTopic(input: $input) { id title status } }",
     "delete_topic": "mutation DeleteTopic($id: ID!) { deleteTopic(id: $id) }",
     "delete_task": "mutation DeleteTask($id: ID!) { deleteITTask(id: $id) }",
-    "practice_plan": (
-        "query PracticePlan($topicIds: [ID!]!, $minutes: Int!) { practicePlan(topicIds: $topicIds, minutes: $minutes) {"
-        " policyVersion totalMinutes warnings items { taskId taskVersionId topicId reasonCode } } }"
-    ),
     "register": (
         "mutation Register($input: RegisterInput!) {"
         f" register(input: $input) {{ token expiresAt user {{ {_USER_FIELDS} }} }}"
@@ -206,6 +203,7 @@ class Gateway:
 
     def __init__(self, client: GraphQLClient | None = None) -> None:
         self.gql = client or GraphQLClient()
+        self.learning = LearningGateway(self.gql)
         self.materials = MaterialGateway(self.gql)
 
     # ----------------------------------- Auth ---------------------------------
@@ -273,9 +271,8 @@ class Gateway:
     def delete_task(self, admin: AuthContext, task_id: str) -> bool:
         return self.gql.execute("delete_task", _Q["delete_task"], {"id": task_id}, token=admin.token)["deleteITTask"]
 
-    def practice_plan(self, user: AuthContext, topic_ids: list[str], minutes: int = 60) -> dict:
-        return self.gql.execute("practice_plan", _Q["practice_plan"],
-                                {"topicIds": topic_ids, "minutes": minutes}, token=user.token)["practicePlan"]
+    def practice_plan(self, user: AuthContext, topic_ids: list[str], minutes: int = 60) -> PracticePlan:
+        return self.learning.practice(user, topic_ids, minutes)
 
     # ----------------------------------- Tasks --------------------------------
     def create_task(

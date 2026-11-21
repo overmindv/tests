@@ -22,12 +22,12 @@ def test_practice_plan_recomputes_from_real_student_answers(api, admin, regular_
 
         with report.step("Студент выбирает тему и получает реальные задачи с объяснением START_TOPIC"):
             plan = api.practice_plan(regular_user, [topic["id"]])
-            asserts.is_not_empty(plan["policyVersion"], "План содержит версию политики recommendations")
-            asserts.equal({item["taskId"] for item in plan["items"]}, {task.id for task in tasks},
+            asserts.is_not_empty(plan.policyVersion, "План содержит версию политики recommendations")
+            asserts.equal({item.taskId for item in plan.items}, {task.id for task in tasks},
                           "В плане обе задачи выбранной темы")
-            asserts.equal({item["topicId"] for item in plan["items"]}, {topic["id"]}, "В плане только выбранная тема")
-            asserts.equal({item["reasonCode"] for item in plan["items"]}, {"START_TOPIC"}, "Объяснение начала темы")
-            asserts.equal(plan["totalMinutes"], 20, "Две начальные задачи укладываются в бюджет")
+            asserts.equal({item.topicId for item in plan.items}, {topic["id"]}, "В плане только выбранная тема")
+            asserts.equal({item.reasonCode for item in plan.items}, {"START_TOPIC"}, "Объяснение начала темы")
+            asserts.equal(plan.totalMinutes, 20, "Две начальные задачи укладываются в бюджет")
 
         first = tasks[0]
         wrong = next(option for option in first.options if not option.isCorrect)
@@ -36,15 +36,15 @@ def test_practice_plan_recomputes_from_real_student_answers(api, admin, regular_
             result = api.submit_answer(regular_user, first.id, first.taskVersionId, [wrong.id])
             asserts.equal(result.verdict, "wrong_answer", "Неверный ответ сохранён")
             plan = api.practice_plan(regular_user, [topic["id"]])
-            asserts.equal(plan["items"][0]["taskId"], first.id, "Задача с ошибкой идёт первой")
-            asserts.equal(plan["items"][0]["reasonCode"], "PRACTICE_GAP", "Подборка учитывает сохранённую ошибку")
+            asserts.equal(plan.items[0].taskId, first.id, "Задача с ошибкой идёт первой")
+            asserts.equal(plan.items[0].reasonCode, "PRACTICE_GAP", "Подборка учитывает сохранённую ошибку")
 
         with report.step("После верного ответа решённая задача исключается, следующая объяснена"):
             result = api.submit_answer(regular_user, first.id, first.taskVersionId, [right.id])
             asserts.equal(result.verdict, "accepted", "Верный ответ сохранён")
             plan = api.practice_plan(regular_user, [topic["id"]])
-            asserts.equal([item["taskId"] for item in plan["items"]], [tasks[1].id], "Осталась только нерешённая задача")
-            asserts.equal(plan["items"][0]["reasonCode"], "NEXT_CHALLENGE", "Подборка объясняет следующий шаг")
+            asserts.equal([item.taskId for item in plan.items], [tasks[1].id], "Осталась только нерешённая задача")
+            asserts.equal(plan.items[0].reasonCode, "NEXT_CHALLENGE", "Подборка объясняет следующий шаг")
     finally:
         with report.step("Очистка только задач и темы текущего сценария"):
             for task in tasks:
