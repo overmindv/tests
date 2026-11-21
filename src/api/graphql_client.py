@@ -115,6 +115,8 @@ class GraphQLClient:
         file_map: dict[str, list[str]],
         files: dict[str, tuple[str, bytes, str]],
         token: str | None = None,
+        *,
+        capture_body: bool = True,
     ) -> dict:
         """Выполнить GraphQL-операцию с загрузкой файла (multipart-контракт).
 
@@ -129,6 +131,7 @@ class GraphQLClient:
         :param file_map: сопоставление частей multipart с путями в variables.
         :param files: {ключ_части: (filename, bytes, Content-Type)}.
         :param token: JWT для Authorization: Bearer (опционально).
+        :param capture_body: сохранять параметры запроса и ответ в отчете.
         :raises HttpError: при HTTP-статусе >= 400 или errors в envelope.
         """
         with report.step("GraphQL upload: {operation}", operation=operation):
@@ -152,6 +155,9 @@ class GraphQLClient:
             )
 
             body = self._safe_json(response)
+            if not capture_body:
+                return self._private_data(response.status_code, body)
+
             report.attach_json(
                 "graphql_upload_request",
                 {"query": query, "variables": variables, "map": file_map,
