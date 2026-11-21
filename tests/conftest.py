@@ -4,47 +4,39 @@
 очистка. Тест-разработчик просто объявляет нужные фикстуры параметрами
 теста и пишет шаги.
 """
+
 from __future__ import annotations
+
+from collections.abc import Iterator
+from contextlib import ExitStack
 
 import pytest
 
-from src import generate
-from src.api.gateway import Gateway
-
-_PASSWORD = "Test12345!"
+from src.api.gateway import AuthContext, Gateway
+from src.scenario_data import ScenarioData
 
 
 @pytest.fixture(scope="function")
-def api() -> Gateway:
+def api() -> Iterator[Gateway]:
     """Готовый фасад api-gateway (без аутентификации)."""
-    return Gateway()
-
-
-@pytest.fixture(scope="function")
-def admin(api: Gateway):
-    """Администратор: bootstrap-суперпользователь (единственный, кто может ставить admin-роль).
-
-    Регистрация нового юзера + повышение собственным токеном невозможна, т.к.
-    `users.SetAdmin` требует прав админа/суперпользователя у вызывающего.
-    """
-    ctx = api.login_bootstrap_superuser()
-    yield ctx
-    # bootstrap-суперпользователя нельзя удалять (users блокирует удаление суперпользователя).
-
-
-@pytest.fixture(scope="function")
-def regular_user(api: Gateway):
-    """Обычный зарегистрированный пользователь (без прав администратора)."""
-    email = generate.unique_email()
-    username = f"user_{generate.uuid4()[:6]}"
-    ctx = api.register(email, _PASSWORD, username)
-    yield ctx
-    _safe_delete(api, ctx)
-
-
-def _safe_delete(api: Gateway, ctx) -> None:
-    """Безусловная очистка пользователя в teardown (не маскируем ошибки теста)."""
+    gateway = Gateway()
     try:
-        api.delete_user(ctx, ctx.user_id)
-    except Exception:  # noqa: BLE001 - стек мог быть остановлен после теста
-        pass
+        yield gateway
+    finally:
+        gateway.gql.session.close()
+
+
+@pytest.fixture(scope="function")
+def admin(api: Gateway) -> AuthContext:
+    return api.login_bootstrap_superuser()
+
+
+@pytest.fixture(scope="function")
+def scenario_data(api: Gateway) -> Iterator[ScenarioData]:
+    with ExitStack() as cleanup:
+        yield ScenarioData(api, cleanup)
+
+
+@pytest.fixture(scope="function")
+def regular_user(scenario_data: ScenarioData) -> AuthContext:
+    return scenario_data.user()
