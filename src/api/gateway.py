@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from src import generate, report
 from src.api.graphql_client import GraphQLClient
+from src.api.materials import MaterialGateway
 from src.configuration import config
 
 # ------------------------------- Модели ответов -------------------------------
@@ -196,6 +197,7 @@ class Gateway:
 
     def __init__(self, client: GraphQLClient | None = None) -> None:
         self.gql = client or GraphQLClient()
+        self.materials = MaterialGateway(self.gql)
 
     # ----------------------------------- Auth ---------------------------------
     def register(self, email: str, password: str, username: str) -> AuthContext:
