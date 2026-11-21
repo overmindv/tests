@@ -7,9 +7,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from src import generate, report
 from src.api.graphql_client import GraphQLClient
@@ -18,6 +18,13 @@ from src.configuration import config
 
 # ------------------------------- Модели ответов -------------------------------
 _USER_FIELDS = "id email username roles isAdmin isSuperuser"
+_CODE_FIELDS = (
+    "id status taskId taskVersionId taskVersionNumber language sourceFileName"
+    " verdict tests { testId verdict stdout stderr durationMs memoryBytes }"
+    " createdAt updatedAt completedAt"
+)
+CodeRunMode = Literal["samples", "graded"]
+ProgrammingLanguage = Literal["python", "go"]
 
 
 class TaskOption(BaseModel):
@@ -49,6 +56,8 @@ class Submission(BaseModel):
 
 
 class ITExecutionTestResult(BaseModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     testId: str
     verdict: str
     stdout: str = ""
@@ -58,12 +67,15 @@ class ITExecutionTestResult(BaseModel):
 
 
 class ITCodeSubmission(BaseModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     id: str
     status: str
+    runMode: CodeRunMode | None = None
     taskId: str | None = None
     taskVersionId: str | None = None
     taskVersionNumber: int | None = None
-    language: str | None = None
+    language: ProgrammingLanguage | None = None
     sourceFileName: str | None = None
     verdict: str | None = None
     tests: list[ITExecutionTestResult] = Field(default_factory=list)
@@ -86,6 +98,17 @@ class AuthContext:
 
 
 # ------------------------------- GraphQL-строки -------------------------------
+def _code_operation(declaration: str, call: str, *, select_mode: bool) -> str:
+    fields = f"{_CODE_FIELDS} runMode" if select_mode else _CODE_FIELDS
+    return f"{declaration} {{ {call} {{ {fields} }} }}"
+
+
+_SUBMIT_CODE = "mutation SubmitITTaskCode($taskId: ID!, $input: ITCodeSubmissionInput!)"
+_SUBMIT_CALL = "submitITTaskCode(taskId: $taskId, input: $input)"
+_GET_CODE = "query ItCodeSubmission($id: ID!)"
+_GET_CALL = "itCodeSubmission(id: $id)"
+
+
 _Q = {
     "create_topic": "mutation CreateTopic($input: CreateTopicInput!) { createTopic(input: $input) { id title status } }",
     "delete_topic": "mutation DeleteTopic($id: ID!) { deleteTopic(id: $id) }",
@@ -146,24 +169,10 @@ _Q = {
         " }"
         "}"
     ),
-    "submit_code": (
-        "mutation SubmitITTaskCode($taskId: ID!, $input: ITCodeSubmissionInput!) {"
-        " submitITTaskCode(taskId: $taskId, input: $input) {"
-        " id status taskId taskVersionId taskVersionNumber language sourceFileName"
-        " verdict tests { testId verdict stdout stderr durationMs memoryBytes }"
-        " createdAt updatedAt completedAt"
-        " }"
-        "}"
-    ),
-    "get_code_submission": (
-        "query ItCodeSubmission($id: ID!) {"
-        " itCodeSubmission(id: $id) {"
-        " id status taskId taskVersionId taskVersionNumber language sourceFileName"
-        " verdict tests { testId verdict stdout stderr durationMs memoryBytes }"
-        " createdAt updatedAt completedAt"
-        " }"
-        "}"
-    ),
+    "submit_code": _code_operation(_SUBMIT_CODE, _SUBMIT_CALL, select_mode=False),
+    "submit_code_mode": _code_operation(_SUBMIT_CODE, _SUBMIT_CALL, select_mode=True),
+    "get_code_submission": _code_operation(_GET_CODE, _GET_CALL, select_mode=False),
+    "get_code_submission_mode": _code_operation(_GET_CODE, _GET_CALL, select_mode=True),
     "admin_tasks": (
         "query AdminITTasks($filter: ITAdminTaskFilter, $pagination: PaginationInput) {"
         " adminITTasks(filter: $filter, pagination: $pagination) {"
@@ -383,43 +392,63 @@ class Gateway:
         task: Task,
         source: str | bytes,
         filename: str = "solution.py",
-        language: str = "python",
+        language: ProgrammingLanguage = "python",
         idempotency_key: str | None = None,
+        *,
+        run_mode: CodeRunMode | None = None,
     ) -> ITCodeSubmission:
         """Отправить файл решения-кода по задаче (уходит по Кафке в sandbox).
 
         Возвращает немедленно созданную посылку (status="queued", verdict=None).
         """
         source_bytes = source.encode("utf-8") if isinstance(source, str) else source
-        variables: dict[str, Any] = {
-            "taskId": task.id,
-            "input": {
-                "taskVersionId": task.taskVersionId,
-                "idempotencyKey": idempotency_key or generate.uuid4(),
-                "language": language,
-                "file": None,
-            },
-        }
+        variables = _code_variables(task, language, idempotency_key, run_mode, file=None)
         file_map = {"0": ["variables.input.file"]}
-        files = {"0": (filename, source_bytes, "text/x-python")}
+        files = {"0": (filename, source_bytes, "text/x-python" if language == "python" else "text/plain")}
+        query = _Q["submit_code"] if run_mode is None else _Q["submit_code_mode"]
         with report.step("Отправляем решение-код по задаче {task_id}", task_id=task.id):
             data = self.gql.execute_upload(
                 "submit_code",
-                _Q["submit_code"],
+                query,
                 variables,
                 file_map,
                 files,
                 token=user.token,
+                capture_body=False,
             )
         return ITCodeSubmission.model_validate(data["submitITTaskCode"])
 
-    def get_code_submission(self, user: AuthContext, submission_id: str) -> ITCodeSubmission:
+    def submit_source(
+        self,
+        user: AuthContext,
+        task: Task,
+        source: str,
+        *,
+        language: ProgrammingLanguage = "python",
+        run_mode: CodeRunMode = "samples",
+        idempotency_key: str | None = None,
+    ) -> ITCodeSubmission:
+        with report.step("Отправляем текст решения по задаче {task_id}", task_id=task.id):
+            data = self.gql.execute(
+                "submit_code",
+                _Q["submit_code_mode"],
+                _code_variables(task, language, idempotency_key, run_mode, sourceCode=source),
+                token=user.token,
+                capture_body=False,
+            )
+        return ITCodeSubmission.model_validate(data["submitITTaskCode"])
+
+    def get_code_submission(
+        self, user: AuthContext, submission_id: str, *, include_run_mode: bool = False,
+    ) -> ITCodeSubmission:
+        query = _Q["get_code_submission_mode"] if include_run_mode else _Q["get_code_submission"]
         with report.step("Получаем статус кодовой посылки {submission_id}", submission_id=submission_id):
             data = self.gql.execute(
                 "get_code_submission",
-                _Q["get_code_submission"],
+                query,
                 {"id": submission_id},
                 token=user.token,
+                capture_body=False,
             )
         return ITCodeSubmission.model_validate(data["itCodeSubmission"])
 
@@ -461,3 +490,22 @@ class Gateway:
             is_superuser=user.get("isSuperuser", False),
             password=password,
         )
+
+
+def _code_variables(
+    task: Task,
+    language: ProgrammingLanguage,
+    idempotency_key: str | None,
+    run_mode: CodeRunMode | None,
+    **submission: Any,
+) -> dict[str, Any]:
+    values = {
+        "taskVersionId": task.taskVersionId,
+        "idempotencyKey": idempotency_key or generate.uuid4(),
+        "language": language,
+        **submission,
+    }
+    # The Gateway pinned in the shared E2E job has no runMode field.
+    if run_mode is not None:
+        values["runMode"] = run_mode
+    return {"taskId": task.id, "input": values}
