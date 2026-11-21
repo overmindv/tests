@@ -13,6 +13,14 @@ import requests
 
 from src import check, report
 from src.configuration import config
+from src.http_error import HttpError
+
+_PUBLIC_ERROR_CODES = frozenset({
+    "ALREADY_EXISTS", "ATTACHMENTS_PENDING", "CANCELED", "DEADLINE_EXCEEDED", "FAILED_PRECONDITION",
+    "GRAPHQL_VALIDATION_FAILED", "INTERNAL", "INVALID_ARGUMENT", "MERGE_CONFLICT", "NOT_FOUND",
+    "PERMISSION_DENIED", "RESOURCE_EXHAUSTED", "REVIEW_REQUIRED", "REVISION_CONFLICT", "SERVICE_UNAVAILABLE",
+    "UNAUTHENTICATED", "UNRESOLVED_REVIEW_THREADS",
+})
 
 
 class GraphQLClient:
@@ -33,6 +41,8 @@ class GraphQLClient:
         query: str,
         variables: dict[str, Any] | None = None,
         token: str | None = None,
+        *,
+        capture_body: bool = True,
     ) -> dict:
         """Выполнить GraphQL-операцию и вернуть поле `data` (dict).
 
@@ -40,6 +50,7 @@ class GraphQLClient:
         :param query: строка GraphQL (query/mutation).
         :param variables: переменные запроса.
         :param token: JWT для Authorization: Bearer (опционально).
+        :param capture_body: сохранять тела запроса и ответа в отчете.
         :raises HttpError: при HTTP-статусе >= 400 или наличии errors в envelope.
         """
         with report.step("GraphQL: {operation}", operation=operation):
@@ -60,12 +71,13 @@ class GraphQLClient:
             )
 
             body = self._safe_json(response)
+            if not capture_body:
+                return self._private_data(response.status_code, body)
+
             report.attach_json("graphql_request", payload)
             report.attach_json("graphql_response", body)
 
             if response.status_code >= 400:
-                from src.http_error import HttpError
-
                 raise HttpError(
                     f"GraphQL HTTP {response.status_code}",
                     response=body,
@@ -73,6 +85,26 @@ class GraphQLClient:
                 )
 
             data = check.gql_success_response(body, message=f"Операция {operation}")
+        return data or {}
+
+    @staticmethod
+    def _private_data(status_code: int, body: Any) -> dict:
+        if status_code >= 400:
+            raise HttpError("GraphQL HTTP error", status_code=status_code)
+        if not isinstance(body, dict) or ("data" not in body and not body.get("errors")):
+            raise HttpError("Invalid GraphQL response")
+        if errors := body.get("errors"):
+            public = []
+            for error in errors if isinstance(errors, list) else ():
+                if not isinstance(error, dict) or not isinstance(error.get("extensions"), dict):
+                    continue
+                code = error["extensions"].get("code")
+                if isinstance(code, str) and code in _PUBLIC_ERROR_CODES:
+                    public.append({"extensions": {"code": code}})
+            raise HttpError("GraphQL operation rejected", response={"errors": public})
+        data = body.get("data")
+        if data is not None and not isinstance(data, dict):
+            raise HttpError("Invalid GraphQL response")
         return data or {}
 
     def execute_upload(
@@ -129,8 +161,6 @@ class GraphQLClient:
             report.attach_json("graphql_response", body)
 
             if response.status_code >= 400:
-                from src.http_error import HttpError
-
                 raise HttpError(
                     f"GraphQL upload HTTP {response.status_code}",
                     response=body,
