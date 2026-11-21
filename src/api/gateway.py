@@ -24,6 +24,12 @@ _CODE_FIELDS = (
     " verdict tests { testId verdict stdout stderr durationMs memoryBytes }"
     " createdAt updatedAt completedAt"
 )
+_CODE_DIAGNOSTICS = (
+    " runMode executionId"
+    " compilation { exitCode stdout stderr durationMs memoryBytes }"
+    " execution { exitCode stdout stderr durationMs memoryBytes }"
+    " failure { code message }"
+)
 CodeRunMode = Literal["samples", "graded"]
 ProgrammingLanguage = Literal["python", "go"]
 
@@ -67,22 +73,51 @@ class ITExecutionTestResult(BaseModel):
     memoryBytes: int = 0
 
 
+class ITExecutionPhase(BaseModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
+    exitCode: int | None
+    stdout: str
+    stderr: str
+    durationMs: int
+    memoryBytes: int
+
+
+class ITExecutionFailure(BaseModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
+    code: str
+    message: str
+
+
 class ITCodeSubmission(BaseModel):
     model_config = ConfigDict(hide_input_in_errors=True)
 
     id: str
     status: str
     runMode: CodeRunMode | None = None
+    executionId: str | None = None
     taskId: str | None = None
     taskVersionId: str | None = None
     taskVersionNumber: int | None = None
     language: ProgrammingLanguage | None = None
     sourceFileName: str | None = None
     verdict: str | None = None
+    compilation: ITExecutionPhase | None = None
+    execution: ITExecutionPhase | None = None
+    failure: ITExecutionFailure | None = None
     tests: list[ITExecutionTestResult] = Field(default_factory=list)
     createdAt: str | None = None
     updatedAt: str | None = None
     completedAt: str | None = None
+
+
+class ITCodeSubmissionPage(BaseModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
+    items: list[ITCodeSubmission]
+    limit: int
+    offset: int
 
 
 @dataclass
@@ -100,7 +135,7 @@ class AuthContext:
 
 # ------------------------------- GraphQL-строки -------------------------------
 def _code_operation(declaration: str, call: str, *, select_mode: bool) -> str:
-    fields = f"{_CODE_FIELDS} runMode" if select_mode else _CODE_FIELDS
+    fields = _CODE_FIELDS + _CODE_DIAGNOSTICS if select_mode else _CODE_FIELDS
     return f"{declaration} {{ {call} {{ {fields} }} }}"
 
 
@@ -170,6 +205,12 @@ _Q = {
     "submit_code_mode": _code_operation(_SUBMIT_CODE, _SUBMIT_CALL, select_mode=True),
     "get_code_submission": _code_operation(_GET_CODE, _GET_CALL, select_mode=False),
     "get_code_submission_mode": _code_operation(_GET_CODE, _GET_CALL, select_mode=True),
+    "my_code_submissions": (
+        "query MyCodeSubmissions($taskId: ID!, $pagination: PaginationInput!) {"
+        " myITCodeSubmissions(taskId: $taskId, pagination: $pagination) {"
+        f" items {{ {_CODE_FIELDS}{_CODE_DIAGNOSTICS} }} limit offset"
+        " } }"
+    ),
     "admin_tasks": (
         "query AdminITTasks($filter: ITAdminTaskFilter, $pagination: PaginationInput) {"
         " adminITTasks(filter: $filter, pagination: $pagination) {"
@@ -448,6 +489,22 @@ class Gateway:
                 capture_body=False,
             )
         return ITCodeSubmission.model_validate(data["itCodeSubmission"])
+
+    def my_code_submissions(
+        self, user: AuthContext, task_id: str, *, limit: int = 20, offset: int = 0,
+    ) -> ITCodeSubmissionPage:
+        data = self.gql.execute(
+            "my_code_submissions",
+            _Q["my_code_submissions"],
+            {"taskId": task_id, "pagination": {"limit": limit, "offset": offset}},
+            token=user.token,
+            capture_body=False,
+        )
+        return ITCodeSubmissionPage.model_validate(data["myITCodeSubmissions"])
+
+    def admin_it_task(self, admin: AuthContext, task_id: str) -> Task:
+        data = self.gql.execute("admin_task", _Q["admin_task"], {"id": task_id}, token=admin.token)
+        return Task.model_validate(data["adminITTask"])
 
     def admin_it_tasks(self, admin: AuthContext, task_type: str | None = None) -> list[dict]:
         """Полные IT-задачи (включая собранные task-hunter'ом): id, варианты, примеры.

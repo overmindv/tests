@@ -1,0 +1,254 @@
+x-postgres: &postgres
+  image: postgres:17-alpine@sha256:dc17045ccfd343b49600570ea734b9c4991cf1c3f3302e67df51e3b402dd55c4
+  tmpfs: [/var/lib/postgresql/data]
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+    interval: 2s
+    timeout: 3s
+    retries: 20
+
+x-users: &users
+  image: ${GRADED_USERS_IMAGE:?run scripts/run_graded_e2e.py}
+  pull_policy: never
+  environment: &users-env
+    DATABASE_URL: postgres://users:${GRADED_USERS_PASSWORD}@users-db:5432/users?sslmode=disable
+
+x-tasks: &tasks
+  image: ${GRADED_TASKS_IMAGE:?run scripts/run_graded_e2e.py}
+  pull_policy: never
+  environment: &tasks-env
+    DATABASE_URL: postgres://tasks:${GRADED_TASKS_PASSWORD}@tasks-db:5432/tasks?sslmode=disable
+
+x-judge: &judge
+  image: ${GRADED_JUDGE_IMAGE:?run scripts/run_graded_e2e.py}
+  pull_policy: never
+  networks: [judge]
+  privileged: true
+  read_only: true
+  shm_size: 256m
+  tmpfs: ["/tmp:size=256m", "/w:size=128m"]
+  healthcheck:
+    test: ["CMD", "curl", "-fsS", "http://127.0.0.1:5050/version"]
+    interval: 2s
+    timeout: 3s
+    retries: 30
+
+services:
+  users-db:
+    <<: *postgres
+    environment: {POSTGRES_USER: users, POSTGRES_DB: users, POSTGRES_PASSWORD: "${GRADED_USERS_PASSWORD}"}
+  users-migrate:
+    <<: *users
+    command: ["migrate", "--dir", "/app/migrations", "up"]
+    depends_on:
+      users-db: {condition: service_healthy}
+  users:
+    <<: *users
+    environment:
+      <<: *users-env
+      HTTP_ADDR: ":8080"
+      JWT_SECRET: ${GRADED_JWT}
+      MEDIA_USERS_TOKEN: ${GRADED_MEDIA_USERS_TOKEN}
+      BOOTSTRAP_SUPERUSER_EMAIL: grader@example.test
+      BOOTSTRAP_SUPERUSER_PASSWORD: ${GRADED_ADMIN_PASSWORD}
+    depends_on:
+      users-migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+  tasks-db:
+    <<: *postgres
+    environment: {POSTGRES_USER: tasks, POSTGRES_DB: tasks, POSTGRES_PASSWORD: "${GRADED_TASKS_PASSWORD}"}
+  tasks-migrate:
+    <<: *tasks
+    command: ["migrate", "--dir", "/app/migrations", "up"]
+    depends_on:
+      tasks-db: {condition: service_healthy}
+  tasks:
+    <<: *tasks
+    environment:
+      <<: *tasks-env
+      HTTP_ADDR: ":8080"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_OUTBOX_POLL_INTERVAL: 100ms
+      TASK_HUNTER_INGEST_TOKEN: ${GRADED_TASK_HUNTER_INGEST_TOKEN}
+      TASKS_SUITE_S3_ENDPOINT: http://minio:9000
+      TASKS_SUITE_S3_REGION: us-east-1
+      TASKS_SUITE_S3_BUCKET: suites
+      TASKS_SUITE_S3_PREFIX: graded
+      TASKS_SUITE_S3_ACCESS_KEY_ID: suites-writer
+      TASKS_SUITE_S3_SECRET_ACCESS_KEY: ${GRADED_S3_WRITER}
+    depends_on:
+      tasks-migrate: {condition: service_completed_successfully}
+      kafka-topics: {condition: service_completed_successfully}
+      suite-bucket: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/ready"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  kafka:
+    image: &kafka apache/kafka:4.3.1@sha256:77e3df9054047a88b520d0cc46e16696d3b22022e1d580aeccd2632df6532837
+    environment:
+      KAFKA_NODE_ID: "1"
+      CLUSTER_ID: 4L6g3nShT-eMCtK--X86sw
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_LOG_DIRS: /tmp/graded-kafka
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-topics.sh", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+  kafka-topics:
+    image: *kafka
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        for kind in requests retry events results deadletter; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+            --partitions 1 --replication-factor 1 --topic "code-execution.$$kind.v1"
+        done
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+          --partitions 1 --replication-factor 1 --topic task.activity.v1
+    depends_on:
+      kafka: {condition: service_healthy}
+  minio:
+    image: &minio cgr.dev/chainguard/minio@sha256:e9cf6b99c226e9539ed0f14b6f00e37b07da153c7ba1f4f8709c807574b471ec
+    command: ["server", "/data"]
+    tmpfs: ["/data:uid=65532,gid=65532,mode=0700"]
+    environment: &minio-env
+      MINIO_ROOT_USER: fixture-root
+      MINIO_ROOT_PASSWORD: ${GRADED_S3_ROOT}
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  suite-bucket:
+    image: *minio
+    entrypoint: ["/bin/sh", "-ec"]
+    environment:
+      <<: *minio-env
+      MC_CONFIG_DIR: /tmp/mc
+      GRADED_S3_READER: ${GRADED_S3_READER}
+      GRADED_S3_WRITER: ${GRADED_S3_WRITER}
+    command:
+      - |
+        mc alias set fixture http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null
+        mc mb --ignore-existing fixture/suites
+        mc anonymous set none fixture/suites
+        printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject"],"Resource":["arn:aws:s3:::suites/graded/*"]}]}' >/tmp/reader.json
+        printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:PutObject","s3:GetObject"],"Resource":["arn:aws:s3:::suites/graded/*"]}]}' >/tmp/writer.json
+        mc admin policy create fixture suites-reader /tmp/reader.json
+        mc admin policy create fixture suites-writer /tmp/writer.json
+        mc admin user add fixture suites-reader "$$GRADED_S3_READER" >/dev/null
+        mc admin user add fixture suites-writer "$$GRADED_S3_WRITER" >/dev/null
+        mc admin policy attach fixture suites-reader --user suites-reader
+        mc admin policy attach fixture suites-writer --user suites-writer
+    depends_on:
+      minio: {condition: service_healthy}
+  gojudge:
+    <<: *judge
+    command: ["-parallelism", "2", "-file-timeout", "2m", "-no-fallback"]
+  gojudge-compiler:
+    <<: *judge
+    command: ["-parallelism", "2", "-tmp-fs-param", "size=128m,nr_inodes=4096", "-file-timeout", "2m", "-no-fallback"]
+  sandbox:
+    image: ${GRADED_WORKER_IMAGE:?run scripts/run_graded_e2e.py}
+    pull_policy: never
+    networks: [default, judge]
+    configs:
+      - source: sandbox-graded
+        target: /etc/sandbox-graded.yaml
+    environment:
+      SANDBOX_CONFIG_FILE: /etc/sandbox-graded.yaml
+      SANDBOX_KAFKA_BROKERS: kafka:9092
+      SANDBOX_EXECUTOR_TYPE: gojudge
+      SANDBOX_FEATURE_FAKE_EXECUTOR: "false"
+      SANDBOX_FEATURE_GOJUDGE_EXECUTOR: "true"
+      SANDBOX_GOJUDGE_BASE_URL: http://gojudge:5050
+      SANDBOX_GOJUDGE_COMPILER_URL: http://gojudge-compiler:5050
+      SANDBOX_FEATURE_OBJECT_STORAGE_TESTS: "true"
+      SANDBOX_TESTS_PROVIDER: s3
+      SANDBOX_TESTS_ENDPOINT: http://minio:9000
+      SANDBOX_TESTS_REGION: us-east-1
+      SANDBOX_TESTS_BUCKET: suites
+      SANDBOX_TESTS_KEY_PREFIX: graded
+      SANDBOX_TESTS_ACCESS_KEY_ID: suites-reader
+      SANDBOX_TESTS_SECRET_ACCESS_KEY: ${GRADED_S3_READER}
+      SANDBOX_ARTIFACTS_ENABLED: "false"
+      SANDBOX_FEATURE_OBJECT_STORAGE_ARTIFACTS: "false"
+    depends_on:
+      kafka-topics: {condition: service_completed_successfully}
+      suite-bucket: {condition: service_completed_successfully}
+      gojudge: {condition: service_healthy}
+      gojudge-compiler: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  api-gateway:
+    image: ${GRADED_GATEWAY_IMAGE:?run scripts/run_graded_e2e.py}
+    pull_policy: never
+    environment:
+      USERS_GRAPHQL_URL: http://users:8080/query
+      TASKS_URL: http://tasks:8080
+      JWT_SECRET: ${GRADED_JWT}
+      TASK_HUNTER_TOKEN: ${GRADED_TASK_HUNTER_TOKEN}
+      MEDIA_TOKEN: ${GRADED_MEDIA_TOKEN}
+      FEED_TOKEN: ${GRADED_FEED_TOKEN}
+    depends_on:
+      users: {condition: service_healthy}
+      tasks: {condition: service_healthy}
+  test:
+    profiles: [test]
+    build:
+      context: ..
+      dockerfile_inline: |
+        FROM python:3.12.16-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+        COPY requirements.txt /requirements.txt
+        RUN pip install --no-cache-dir -r /requirements.txt
+        WORKDIR /suite
+        COPY src/ src/
+        COPY tests/ tests/
+        COPY conftest.py pyproject.toml ./
+    environment:
+      GRADED_E2E: "1"
+      BASE_URL: http://api-gateway:8081
+      BOOTSTRAP_SUPERUSER_EMAIL: grader@example.test
+      BOOTSTRAP_SUPERUSER_PASSWORD: ${GRADED_ADMIN_PASSWORD}
+      ALLURE_RESULTS_DIR: /evidence/allure
+    volumes:
+      - type: bind
+        source: ${GRADED_EVIDENCE_DIR:?run scripts/run_graded_e2e.py}
+        target: /evidence
+        bind: {create_host_path: false}
+    command: ["python", "-m", "pytest", "--tb=short", "tests/test_programming_flow.py"]
+    depends_on:
+      api-gateway: {condition: service_started}
+      sandbox: {condition: service_healthy}
+
+networks:
+  default: {internal: true}
+  judge: {internal: true}
+
+configs:
+  sandbox-graded:
+    content: |
+      tests:
+        object_storage:
+          enabled: true

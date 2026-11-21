@@ -1,0 +1,6 @@
+[
+  {"repository": "api-gateway", "revision": "2c656f78214e4635ba0a8798a267fcfffb21cadd"},
+  {"repository": "tasks", "revision": "c8c50a4f70245a2ed0bb9bb584e502a127ad8da9"},
+  {"repository": "users", "revision": "77627f885fb6374b7267ea8b643a2763131f6741"},
+  {"repository": "sandbox", "revision": "684ed7f912d9403e55c40c9e7308fc8d1a7438bc"}
+]
