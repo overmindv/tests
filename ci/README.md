@@ -2,10 +2,11 @@
 
 ## Release candidate
 
-`release-e2e.yml` accepts a manual release run from `overmindv/infra` on `main`.
+`release-e2e.yml` accepts a manual release run from private `overmindv/docs` on `main`.
 Pass the contents of the published `release.json` from infra and the full
 `tests_ref` SHA used in the reusable workflow reference. The caller needs
 `contents: read`, `packages: read` and access to the candidate GHCR packages.
+Do not grant candidate package access to public Infra or Tests workflows.
 No cross-repository source token is needed for Feed or Sandbox.
 
 The job checks out only tests and the infra SHA from the manifest. The infra

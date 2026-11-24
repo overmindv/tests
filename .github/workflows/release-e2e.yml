@@ -23,16 +23,20 @@ jobs:
     env:
       COMPOSE_PARALLEL_LIMIT: '2'
     steps:
-      - name: Require manual release from Infra main
+      - name: Require manual release from private Docs main
         id: guard
         env:
           CALLER_REPOSITORY: ${{ github.repository }}
+          CALLER_PRIVATE: ${{ github.event.repository.private }}
           CALLER_EVENT: ${{ github.event_name }}
           CALLER_REF: ${{ github.ref }}
           TESTS_REF: ${{ inputs.tests_ref }}
         run: |
-          [[ "$CALLER_REPOSITORY" == overmindv/infra && "$CALLER_EVENT" == workflow_dispatch ]]
-          [[ "$CALLER_REF" == refs/heads/main ]]
+          if [[ "$CALLER_REPOSITORY" != overmindv/docs || "$CALLER_PRIVATE" != true ||
+                "$CALLER_EVENT" != workflow_dispatch || "$CALLER_REF" != refs/heads/main ]]; then
+            echo "::error::Release E2E requires the private overmindv/docs main workflow"
+            exit 2
+          fi
           [[ "$TESTS_REF" =~ ^[0-9a-f]{40}$ ]]
           printf 'RELEASE_RUN_DIR=%s/release-ci-%s\n' "$RUNNER_TEMP" "$(openssl rand -hex 6)" >> "$GITHUB_ENV"
           printf 'DOCKER_CONFIG=%s/release-docker\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
