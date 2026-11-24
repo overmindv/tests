@@ -17,18 +17,18 @@ INFRA = Path("infra").resolve()
 CODE_SERVICES = ("api-gateway", "frontend", "feed", "gojudge", "sandbox")
 
 
-def candidate():
+def candidate(registry=REGISTRY):
     repos = {name: ("sandbox" if name == "gojudge" else name) for name in CODE_SERVICES}
     return {
         "plan": {
             "version": 1,
-            "registry": REGISTRY,
+            "registry": registry,
             "platform": "linux/amd64",
             "sources": dict.fromkeys({"infra", *repos.values()}, "1" * 40),
             "images": {name: {"source": repo} for name, repo in repos.items()},
             "upstream": {role: f"{name}@{DIGEST}" for role, name in stack.UPSTREAM.items()},
         },
-        "images": {name: f"{REGISTRY}/{name}@{DIGEST}" for name in CODE_SERVICES},
+        "images": {name: f"{registry}/{name}@{DIGEST}" for name in CODE_SERVICES},
     }
 
 
@@ -65,12 +65,71 @@ def test_feeds_and_migrations_use_published_images():
     stack.verify_config(actual, release, INFRA)
 
 
+def test_candidate_keeps_renderer_source_and_rejects_regular_registry():
+    registry = "ghcr.io/overmindv/rc"
+    manifest = candidate(registry)
+    plan = manifest["plan"]
+    plan["images"].update({"media": {"source": "media"}, "media-renderer": {"source": "media"}})
+    plan["sources"]["media"] = "2" * 40
+    for role in ("media", "media-renderer"):
+        manifest["images"][role] = f"{registry}/{role}@{DIGEST}"
+    release = stack.validate_manifest(manifest, registry)
+    assert release.reference("media-renderer") == manifest["images"]["media-renderer"]
+    assert release.labels("media-renderer") == {
+        "org.opencontainers.image.source": "https://github.com/overmindv/docs",
+        "org.opencontainers.image.revision": "2" * 40,
+        "io.overmindv.release.source": "https://github.com/overmindv/media",
+        "io.overmindv.release.plan": release.plan_sha,
+        "io.overmindv.release.service": "media-renderer",
+    }
+    with pytest.raises(ValueError, match="unexpected release registry"):
+        stack.validate_manifest(manifest, REGISTRY)
+    plan["images"]["media-renderer"]["source"] = "media-renderer"
+    with pytest.raises(ValueError, match="unexpected source repository"):
+        stack.validate_manifest(manifest, registry)
+
+
 @pytest.mark.parametrize("bad_ref", ["ghcr.io/overmindv/feed:latest", f"example.test/feed@{DIGEST}", DIGEST])
 def test_rejects_tag_or_wrong_repository(bad_ref):
     manifest = candidate()
     manifest["images"]["feed"] = bad_ref
     with pytest.raises(ValueError, match="expected repository"):
         stack.validate_manifest(manifest, REGISTRY)
+
+
+def test_catalog_bootstrap_is_not_a_release_service():
+    release = stack.validate_manifest(candidate(), REGISTRY)
+    actual = services(release)
+    actual["catalog-bootstrap"] = {"image": "python:3.13-alpine"}
+    overlay = stack.render_overlay(actual, release)
+    assert "catalog-bootstrap:\n    profiles: !override [debug-only]" in overlay
+    with pytest.raises(ValueError, match="unexpected active Compose services"):
+        stack.verify_config(actual, release, INFRA)
+
+
+def test_media_bucket_job_can_mount_only_checked_out_policy(tmp_path):
+    release = stack.validate_manifest(candidate(), REGISTRY)
+    actual = services(release)
+    path = tmp_path / "config/media/public-policy.json"
+    path.parent.mkdir(parents=True)
+    path.touch()
+    mount = {
+        "type": "bind",
+        "source": str(path),
+        "target": "/etc/media/public-policy.json",
+        "read_only": True,
+        "bind": {"create_host_path": False},
+    }
+    actual["media-buckets"] = {
+        "image": release.reference("media-buckets"),
+        "platform": "linux/amd64",
+        "volumes": [mount],
+    }
+    stack.verify_config(actual, release, tmp_path)
+    for change in ({"source": str(path.parent)}, {"target": "/tmp/policy"}, {"read_only": False}):
+        actual["media-buckets"]["volumes"] = [{**mount, **change}]
+        with pytest.raises(ValueError, match="host access"):
+            stack.verify_config(actual, release, tmp_path)
 
 
 @pytest.mark.parametrize(

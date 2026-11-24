@@ -22,6 +22,7 @@ jobs:
     timeout-minutes: 55
     env:
       COMPOSE_PARALLEL_LIMIT: '2'
+      RELEASE_REGISTRY: ghcr.io/overmindv/rc
     steps:
       - name: Require manual release from private Docs main
         id: guard
@@ -59,7 +60,8 @@ jobs:
         run: |
           umask 077
           printf '%s\n' "$RELEASE_MANIFEST" > "$RUNNER_TEMP/release.json"
-          ref="$(python3 workspace/tests/scripts/release_stack.py infra-ref --manifest "$RUNNER_TEMP/release.json")"
+          ref="$(python3 workspace/tests/scripts/release_stack.py infra-ref \
+            --manifest "$RUNNER_TEMP/release.json" --registry "$RELEASE_REGISTRY")"
           printf 'infra_ref=%s\n' "$ref" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -84,7 +86,7 @@ jobs:
       - name: Prepare isolated Compose project
         run: |
           python3 workspace/tests/scripts/release_stack.py render --manifest "$RUNNER_TEMP/release.json" \
-            --infra workspace/infra --run-dir "$RELEASE_RUN_DIR"
+            --registry "$RELEASE_REGISTRY" --infra workspace/infra --run-dir "$RELEASE_RUN_DIR"
       - name: Sign in to GHCR
         id: registry
         env:
@@ -96,7 +98,7 @@ jobs:
         id: stack
         run: |
           python3 workspace/tests/scripts/release_stack.py start --manifest "$RUNNER_TEMP/release.json" \
-            --infra workspace/infra --run-dir "$RELEASE_RUN_DIR"
+            --registry "$RELEASE_REGISTRY" --infra workspace/infra --run-dir "$RELEASE_RUN_DIR"
       - name: Run API and browser journeys
         id: journeys
         working-directory: workspace/tests

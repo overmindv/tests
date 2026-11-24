@@ -15,6 +15,8 @@ from pathlib import Path
 SHA = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 NAME = re.compile(r"[a-z][a-z0-9-]*")
+CANDIDATE_REGISTRY = "ghcr.io/overmindv/rc"
+IMAGE_SOURCE_ALIASES = {"gojudge": "sandbox", "media-renderer": "media"}
 UPSTREAM = {
     "kafka": "apache/kafka",
     "postgres": "postgres",
@@ -24,8 +26,13 @@ UPSTREAM = {
 COMPOSE_ACTIONS = {"config", "pull", "up", "down", "ps"}
 ALIASES = {"kafka-topics": "kafka", "media-buckets": "minio"}
 GOJUDGE_SERVICES = {"gojudge", "gojudge-compiler"}
+DEV_ONLY_SERVICES = {"catalog-bootstrap", "kafka-ui"}
 KAFKA_TOPICS_SCRIPT = Path("scripts/kafka/topics.sh")
 KAFKA_TOPICS_TARGET = "/opt/overmind/kafka/topics.sh"
+CHECKOUT_BINDS = {
+    "kafka-topics": (KAFKA_TOPICS_SCRIPT, KAFKA_TOPICS_TARGET),
+    "media-buckets": (Path("config/media/public-policy.json"), "/etc/media/public-policy.json"),
+}
 PORTS = {"frontend": ("FRONTEND_PORT", 3000), "api-gateway": ("API_GATEWAY_PORT", 8081)}
 REQUIRED = {"sandbox", "gojudge", "feed", *PORTS}
 
@@ -45,6 +52,7 @@ def unique(pairs):
 
 @dataclass(frozen=True)
 class Release:
+    registry: str
     sources: dict
     images: dict
     image_sources: dict
@@ -74,12 +82,17 @@ class Release:
         if role not in self.image_sources:
             return {}
         repo = self.image_sources[role]
-        return {
-            "org.opencontainers.image.source": f"https://github.com/overmindv/{repo}",
+        source = f"https://github.com/overmindv/{repo}"
+        labels = {
+            "org.opencontainers.image.source": source,
             "org.opencontainers.image.revision": self.sources[repo],
             "io.overmindv.release.plan": self.plan_sha,
             "io.overmindv.release.service": role,
         }
+        if self.registry == CANDIDATE_REGISTRY:
+            labels["org.opencontainers.image.source"] = "https://github.com/overmindv/docs"
+            labels["io.overmindv.release.source"] = source
+        return labels
 
 
 def validate_manifest(manifest, registry):
@@ -102,7 +115,7 @@ def validate_manifest(manifest, registry):
         ):
             raise ValueError("service image must use the expected repository and manifest digest")
         image_sources[service] = plan["images"][service]["source"]
-        if image_sources[service] != ("sandbox" if service == "gojudge" else service):
+        if image_sources[service] != IMAGE_SOURCE_ALIASES.get(service, service):
             raise ValueError(f"{service}: unexpected source repository")
     if sources.keys() != {"infra", *image_sources.values()} or any(
         not NAME.fullmatch(name) or not SHA.fullmatch(sha) for name, sha in sources.items()
@@ -114,7 +127,7 @@ def validate_manifest(manifest, registry):
         name, _, digest = upstream[role].partition("@")
         if name != repo or not DIGEST.fullmatch(digest):
             raise ValueError(f"{role}: expected upstream image digest")
-    return Release(sources, images, image_sources, upstream, fingerprint(plan), fingerprint(manifest))
+    return Release(registry, sources, images, image_sources, upstream, fingerprint(plan), fingerprint(manifest))
 
 
 def command(argv, cwd=None, timeout=60):
@@ -205,7 +218,7 @@ def render_overlay(services, manifest):
         if not NAME.fullmatch(service):
             raise ValueError("unexpected Compose service name")
         lines.append(f"  {service}:")
-        if service == "kafka-ui":
+        if service in DEV_ONLY_SERVICES:
             lines.extend(["    profiles: !override [debug-only]", "    ports: !reset []"])
             continue
         lines.extend(
@@ -239,20 +252,22 @@ def render_overlay(services, manifest):
 
 
 def approved_bind(service, mount, infra):
-    script = infra / KAFKA_TOPICS_SCRIPT
+    if service not in CHECKOUT_BINDS:
+        return False
+    relative_path, target = CHECKOUT_BINDS[service]
+    source = infra / relative_path
     return (
-        service == "kafka-topics"
-        and mount.get("source") == str(script)
-        and mount.get("target") == KAFKA_TOPICS_TARGET
+        mount.get("source") == str(source)
+        and mount.get("target") == target
         and mount.get("read_only") is True
         and mount.get("bind", {}).get("create_host_path") is False
-        and script.resolve() == script
-        and script.is_file()
+        and source.resolve() == source
+        and source.is_file()
     )
 
 
 def verify_config(services, release, infra):
-    if "kafka-ui" in services or not release.images.keys() <= services.keys():
+    if DEV_ONLY_SERVICES & services.keys() or not release.images.keys() <= services.keys():
         raise ValueError("unexpected active Compose services")
     for name, service in services.items():
         if (
