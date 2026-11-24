@@ -26,8 +26,13 @@ UPSTREAM = {
 COMPOSE_ACTIONS = {"config", "pull", "up", "down", "ps"}
 ALIASES = {"kafka-topics": "kafka", "media-buckets": "minio"}
 GOJUDGE_SERVICES = {"gojudge", "gojudge-compiler"}
+DEV_ONLY_SERVICES = {"catalog-bootstrap", "kafka-ui"}
 KAFKA_TOPICS_SCRIPT = Path("scripts/kafka/topics.sh")
 KAFKA_TOPICS_TARGET = "/opt/overmind/kafka/topics.sh"
+CHECKOUT_BINDS = {
+    "kafka-topics": (KAFKA_TOPICS_SCRIPT, KAFKA_TOPICS_TARGET),
+    "media-buckets": (Path("config/media/public-policy.json"), "/etc/media/public-policy.json"),
+}
 PORTS = {"frontend": ("FRONTEND_PORT", 3000), "api-gateway": ("API_GATEWAY_PORT", 8081)}
 REQUIRED = {"sandbox", "gojudge", "feed", *PORTS}
 
@@ -213,7 +218,7 @@ def render_overlay(services, manifest):
         if not NAME.fullmatch(service):
             raise ValueError("unexpected Compose service name")
         lines.append(f"  {service}:")
-        if service == "kafka-ui":
+        if service in DEV_ONLY_SERVICES:
             lines.extend(["    profiles: !override [debug-only]", "    ports: !reset []"])
             continue
         lines.extend(
@@ -247,20 +252,22 @@ def render_overlay(services, manifest):
 
 
 def approved_bind(service, mount, infra):
-    script = infra / KAFKA_TOPICS_SCRIPT
+    if service not in CHECKOUT_BINDS:
+        return False
+    relative_path, target = CHECKOUT_BINDS[service]
+    source = infra / relative_path
     return (
-        service == "kafka-topics"
-        and mount.get("source") == str(script)
-        and mount.get("target") == KAFKA_TOPICS_TARGET
+        mount.get("source") == str(source)
+        and mount.get("target") == target
         and mount.get("read_only") is True
         and mount.get("bind", {}).get("create_host_path") is False
-        and script.resolve() == script
-        and script.is_file()
+        and source.resolve() == source
+        and source.is_file()
     )
 
 
 def verify_config(services, release, infra):
-    if "kafka-ui" in services or not release.images.keys() <= services.keys():
+    if DEV_ONLY_SERVICES & services.keys() or not release.images.keys() <= services.keys():
         raise ValueError("unexpected active Compose services")
     for name, service in services.items():
         if (

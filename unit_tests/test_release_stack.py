@@ -97,6 +97,41 @@ def test_rejects_tag_or_wrong_repository(bad_ref):
         stack.validate_manifest(manifest, REGISTRY)
 
 
+def test_catalog_bootstrap_is_not_a_release_service():
+    release = stack.validate_manifest(candidate(), REGISTRY)
+    actual = services(release)
+    actual["catalog-bootstrap"] = {"image": "python:3.13-alpine"}
+    overlay = stack.render_overlay(actual, release)
+    assert "catalog-bootstrap:\n    profiles: !override [debug-only]" in overlay
+    with pytest.raises(ValueError, match="unexpected active Compose services"):
+        stack.verify_config(actual, release, INFRA)
+
+
+def test_media_bucket_job_can_mount_only_checked_out_policy(tmp_path):
+    release = stack.validate_manifest(candidate(), REGISTRY)
+    actual = services(release)
+    path = tmp_path / "config/media/public-policy.json"
+    path.parent.mkdir(parents=True)
+    path.touch()
+    mount = {
+        "type": "bind",
+        "source": str(path),
+        "target": "/etc/media/public-policy.json",
+        "read_only": True,
+        "bind": {"create_host_path": False},
+    }
+    actual["media-buckets"] = {
+        "image": release.reference("media-buckets"),
+        "platform": "linux/amd64",
+        "volumes": [mount],
+    }
+    stack.verify_config(actual, release, tmp_path)
+    for change in ({"source": str(path.parent)}, {"target": "/tmp/policy"}, {"read_only": False}):
+        actual["media-buckets"]["volumes"] = [{**mount, **change}]
+        with pytest.raises(ValueError, match="host access"):
+            stack.verify_config(actual, release, tmp_path)
+
+
 @pytest.mark.parametrize(
     "extra, reason",
     [
