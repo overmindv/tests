@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,7 +17,7 @@ SHA = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 NAME = re.compile(r"[a-z][a-z0-9-]*")
 CANDIDATE_REGISTRY = "ghcr.io/overmindv/rc"
-IMAGE_SOURCE_ALIASES = {"gojudge": "sandbox", "media-renderer": "media"}
+IMAGE_SOURCE_ALIASES = {"gojudge": "sandbox", "media-renderer": "media", "postgres": "infra"}
 UPSTREAM = {
     "kafka": "apache/kafka",
     "postgres": "postgres",
@@ -103,6 +104,9 @@ def validate_manifest(manifest, registry):
         raise ValueError("unexpected release registry")
     if images.keys() != plan["images"].keys() or not REQUIRED <= images.keys():
         raise ValueError("manifest is missing published service images")
+    built_postgres = "postgres" in images
+    if built_postgres and registry != CANDIDATE_REGISTRY:
+        raise ValueError("the built Postgres image is only allowed in private candidates")
     sources, upstream = plan["sources"], plan["upstream"]
     image_sources = {}
     for service, ref in images.items():
@@ -121,11 +125,12 @@ def validate_manifest(manifest, registry):
         not NAME.fullmatch(name) or not SHA.fullmatch(sha) for name, sha in sources.items()
     ):
         raise ValueError("manifest sources must contain full SHAs for all release repositories")
-    if upstream.keys() != UPSTREAM.keys() or images.keys() & upstream.keys():
+    expected = UPSTREAM.keys() - ({"postgres"} if built_postgres else set())
+    if upstream.keys() != expected or images.keys() & upstream.keys():
         raise ValueError("unexpected upstream image set")
-    for role, repo in UPSTREAM.items():
-        name, _, digest = upstream[role].partition("@")
-        if name != repo or not DIGEST.fullmatch(digest):
+    for role, ref in upstream.items():
+        name, _, digest = ref.partition("@")
+        if name != UPSTREAM[role] or not DIGEST.fullmatch(digest):
             raise ValueError(f"{role}: expected upstream image digest")
     return Release(registry, sources, images, image_sources, upstream, fingerprint(plan), fingerprint(manifest))
 
@@ -210,9 +215,15 @@ def config(args):
     return document["services"]
 
 
-def render_overlay(services, manifest):
-    if not manifest.images.keys() <= services.keys():
+def require_release_services(services, release):
+    if not release.images.keys() - {"postgres"} <= services.keys():
         raise ValueError("Compose is missing a service from the release")
+    if "postgres" in release.images and not any(name.endswith("-postgres") for name in services):
+        raise ValueError("candidate Postgres is missing from Compose")
+
+
+def render_overlay(services, manifest):
+    require_release_services(services, manifest)
     lines = ["services:"]
     for service in sorted(services):
         if not NAME.fullmatch(service):
@@ -267,8 +278,9 @@ def approved_bind(service, mount, infra):
 
 
 def verify_config(services, release, infra):
-    if DEV_ONLY_SERVICES & services.keys() or not release.images.keys() <= services.keys():
+    if DEV_ONLY_SERVICES & services.keys():
         raise ValueError("unexpected active Compose services")
+    require_release_services(services, release)
     for name, service in services.items():
         if (
             service.get("image") != release.reference(name)
@@ -345,6 +357,16 @@ def verify_running(containers, expected, project):
     return observed
 
 
+def verify_postgres(release, infra):
+    if ref := release.images.get("postgres"):
+        print("Check the published Postgres image", flush=True)
+        print(
+            command([sys.executable, "tests/postgres_roles_smoke.py", "--image", ref], cwd=infra, timeout=120),
+            end="",
+            flush=True,
+        )
+
+
 def main():
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="action", required=True)
@@ -383,6 +405,7 @@ def main():
         print("Pull release digests", flush=True)
         command([*locked, "pull"], timeout=900)
         expected = inspect_images(services, release)
+        verify_postgres(release, infra)
         print("Start release stack without builds", flush=True)
         (run_dir / "start.requested").touch()
         command([*locked, "up", "--no-build", "--pull", "never", "--wait", "--wait-timeout", "600"], timeout=660)
