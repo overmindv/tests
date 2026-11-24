@@ -17,7 +17,7 @@ SHA = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 NAME = re.compile(r"[a-z][a-z0-9-]*")
 CANDIDATE_REGISTRY = "ghcr.io/overmindv/rc"
-IMAGE_SOURCE_ALIASES = {"gojudge": "sandbox", "media-renderer": "media", "postgres": "infra"}
+IMAGE_SOURCE_ALIASES = {"gojudge": "sandbox", "media-renderer": "media", "postgres": "infra", "kafka": "infra"}
 UPSTREAM = {
     "kafka": "apache/kafka",
     "postgres": "postgres",
@@ -104,9 +104,9 @@ def validate_manifest(manifest, registry):
         raise ValueError("unexpected release registry")
     if images.keys() != plan["images"].keys() or not REQUIRED <= images.keys():
         raise ValueError("manifest is missing published service images")
-    built_postgres = "postgres" in images
-    if built_postgres and registry != CANDIDATE_REGISTRY:
-        raise ValueError("the built Postgres image is only allowed in private candidates")
+    built_runtime = images.keys() & {"postgres", "kafka"}
+    if built_runtime and registry != CANDIDATE_REGISTRY:
+        raise ValueError("built runtime images are only allowed in private candidates")
     sources, upstream = plan["sources"], plan["upstream"]
     image_sources = {}
     for service, ref in images.items():
@@ -125,7 +125,7 @@ def validate_manifest(manifest, registry):
         not NAME.fullmatch(name) or not SHA.fullmatch(sha) for name, sha in sources.items()
     ):
         raise ValueError("manifest sources must contain full SHAs for all release repositories")
-    expected = UPSTREAM.keys() - ({"postgres"} if built_postgres else set())
+    expected = UPSTREAM.keys() - built_runtime
     if upstream.keys() != expected or images.keys() & upstream.keys():
         raise ValueError("unexpected upstream image set")
     for role, ref in upstream.items():
@@ -216,7 +216,10 @@ def config(args):
 
 
 def require_release_services(services, release):
-    if not release.images.keys() - {"postgres"} <= services.keys():
+    expected = release.images.keys() - {"postgres"}
+    if "kafka" in expected:
+        expected.add("kafka-topics")
+    if not expected <= services.keys():
         raise ValueError("Compose is missing a service from the release")
     if "postgres" in release.images and not any(name.endswith("-postgres") for name in services):
         raise ValueError("candidate Postgres is missing from Compose")
@@ -367,6 +370,26 @@ def verify_postgres(release, infra):
         )
 
 
+def verify_kafka(release, infra, expected):
+    if "kafka" in release.images:
+        print("Check SCRAM on the published Kafka image", flush=True)
+        print(
+            command(
+                [
+                    "env",
+                    f"KAFKA_TEST_IMAGE_ID={expected['kafka']['id']}",
+                    "sh",
+                    "tests/catalog-kafka-live.sh",
+                    "sandbox",
+                ],
+                cwd=infra,
+                timeout=600,
+            ),
+            end="",
+            flush=True,
+        )
+
+
 def main():
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="action", required=True)
@@ -406,6 +429,7 @@ def main():
         command([*locked, "pull"], timeout=900)
         expected = inspect_images(services, release)
         verify_postgres(release, infra)
+        verify_kafka(release, infra, expected)
         print("Start release stack without builds", flush=True)
         (run_dir / "start.requested").touch()
         command([*locked, "up", "--no-build", "--pull", "never", "--wait", "--wait-timeout", "600"], timeout=660)

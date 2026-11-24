@@ -130,6 +130,45 @@ def test_built_postgres_is_pinned_and_smoked_only_in_a_private_candidate(monkeyp
         stack.validate_manifest(manifest, REGISTRY)
 
 
+def test_built_kafka_and_topics_use_the_same_candidate_digest(monkeypatch):
+    registry = stack.CANDIDATE_REGISTRY
+    manifest = candidate(registry)
+    plan = manifest["plan"]
+    original = plan["upstream"]["kafka"]
+    command = Mock(return_value="Kafka fixture passed\n")
+    monkeypatch.setattr(stack, "command", command)
+    stack.verify_kafka(stack.validate_manifest(manifest, registry), INFRA, {})
+    command.assert_not_called()
+    ref = f"{registry}/kafka@{DIGEST}"
+    plan["images"]["kafka"] = {"source": "infra"}
+    manifest["images"]["kafka"] = ref
+    with pytest.raises(ValueError, match="unexpected upstream image set"):
+        stack.validate_manifest(manifest, registry)
+    plan["upstream"].pop("kafka")
+    release = stack.validate_manifest(manifest, registry)
+    assert release.reference("kafka") == release.reference("kafka-topics") == ref
+    assert release.labels("kafka-topics")["io.overmindv.release.source"].endswith("/infra")
+    actual = services(release)
+    assert f"  kafka-topics:\n    image: {json.dumps(ref)}\n" in stack.render_overlay(actual, release)
+    stack.verify_config(actual, release, INFRA)
+    without_topics = {name: service for name, service in actual.items() if name != "kafka-topics"}
+    with pytest.raises(ValueError, match="missing a service"):
+        stack.verify_config(without_topics, release, INFRA)
+    actual["kafka-topics"]["image"] = original
+    with pytest.raises(ValueError, match="image drift"):
+        stack.verify_config(actual, release, INFRA)
+    local_id = "sha256:" + "b" * 64
+    stack.verify_kafka(release, INFRA, {"kafka": {"image": ref, "id": local_id}})
+    command.assert_called_once_with(
+        ["env", f"KAFKA_TEST_IMAGE_ID={local_id}", "sh", "tests/catalog-kafka-live.sh", "sandbox"],
+        cwd=INFRA,
+        timeout=600,
+    )
+    plan["registry"] = REGISTRY
+    with pytest.raises(ValueError, match="only allowed in private candidates"):
+        stack.validate_manifest(manifest, REGISTRY)
+
+
 @pytest.mark.parametrize("bad_ref", ["ghcr.io/overmindv/feed:latest", f"example.test/feed@{DIGEST}", DIGEST])
 def test_rejects_tag_or_wrong_repository(bad_ref):
     manifest = candidate()
