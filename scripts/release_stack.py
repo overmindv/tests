@@ -15,6 +15,8 @@ from pathlib import Path
 SHA = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 NAME = re.compile(r"[a-z][a-z0-9-]*")
+CANDIDATE_REGISTRY = "ghcr.io/overmindv/rc"
+IMAGE_SOURCE_ALIASES = {"gojudge": "sandbox", "media-renderer": "media"}
 UPSTREAM = {
     "kafka": "apache/kafka",
     "postgres": "postgres",
@@ -45,6 +47,7 @@ def unique(pairs):
 
 @dataclass(frozen=True)
 class Release:
+    registry: str
     sources: dict
     images: dict
     image_sources: dict
@@ -74,12 +77,17 @@ class Release:
         if role not in self.image_sources:
             return {}
         repo = self.image_sources[role]
-        return {
-            "org.opencontainers.image.source": f"https://github.com/overmindv/{repo}",
+        source = f"https://github.com/overmindv/{repo}"
+        labels = {
+            "org.opencontainers.image.source": source,
             "org.opencontainers.image.revision": self.sources[repo],
             "io.overmindv.release.plan": self.plan_sha,
             "io.overmindv.release.service": role,
         }
+        if self.registry == CANDIDATE_REGISTRY:
+            labels["org.opencontainers.image.source"] = "https://github.com/overmindv/docs"
+            labels["io.overmindv.release.source"] = source
+        return labels
 
 
 def validate_manifest(manifest, registry):
@@ -102,7 +110,7 @@ def validate_manifest(manifest, registry):
         ):
             raise ValueError("service image must use the expected repository and manifest digest")
         image_sources[service] = plan["images"][service]["source"]
-        if image_sources[service] != ("sandbox" if service == "gojudge" else service):
+        if image_sources[service] != IMAGE_SOURCE_ALIASES.get(service, service):
             raise ValueError(f"{service}: unexpected source repository")
     if sources.keys() != {"infra", *image_sources.values()} or any(
         not NAME.fullmatch(name) or not SHA.fullmatch(sha) for name, sha in sources.items()
@@ -114,7 +122,7 @@ def validate_manifest(manifest, registry):
         name, _, digest = upstream[role].partition("@")
         if name != repo or not DIGEST.fullmatch(digest):
             raise ValueError(f"{role}: expected upstream image digest")
-    return Release(sources, images, image_sources, upstream, fingerprint(plan), fingerprint(manifest))
+    return Release(registry, sources, images, image_sources, upstream, fingerprint(plan), fingerprint(manifest))
 
 
 def command(argv, cwd=None, timeout=60):

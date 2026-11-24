@@ -17,18 +17,18 @@ INFRA = Path("infra").resolve()
 CODE_SERVICES = ("api-gateway", "frontend", "feed", "gojudge", "sandbox")
 
 
-def candidate():
+def candidate(registry=REGISTRY):
     repos = {name: ("sandbox" if name == "gojudge" else name) for name in CODE_SERVICES}
     return {
         "plan": {
             "version": 1,
-            "registry": REGISTRY,
+            "registry": registry,
             "platform": "linux/amd64",
             "sources": dict.fromkeys({"infra", *repos.values()}, "1" * 40),
             "images": {name: {"source": repo} for name, repo in repos.items()},
             "upstream": {role: f"{name}@{DIGEST}" for role, name in stack.UPSTREAM.items()},
         },
-        "images": {name: f"{REGISTRY}/{name}@{DIGEST}" for name in CODE_SERVICES},
+        "images": {name: f"{registry}/{name}@{DIGEST}" for name in CODE_SERVICES},
     }
 
 
@@ -63,6 +63,30 @@ def test_feeds_and_migrations_use_published_images():
     assert release.reference("gojudge-compiler") == release.images["gojudge"]
     assert release.labels("gojudge-compiler") == release.labels("gojudge")
     stack.verify_config(actual, release, INFRA)
+
+
+def test_candidate_keeps_renderer_source_and_rejects_regular_registry():
+    registry = "ghcr.io/overmindv/rc"
+    manifest = candidate(registry)
+    plan = manifest["plan"]
+    plan["images"].update({"media": {"source": "media"}, "media-renderer": {"source": "media"}})
+    plan["sources"]["media"] = "2" * 40
+    for role in ("media", "media-renderer"):
+        manifest["images"][role] = f"{registry}/{role}@{DIGEST}"
+    release = stack.validate_manifest(manifest, registry)
+    assert release.reference("media-renderer") == manifest["images"]["media-renderer"]
+    assert release.labels("media-renderer") == {
+        "org.opencontainers.image.source": "https://github.com/overmindv/docs",
+        "org.opencontainers.image.revision": "2" * 40,
+        "io.overmindv.release.source": "https://github.com/overmindv/media",
+        "io.overmindv.release.plan": release.plan_sha,
+        "io.overmindv.release.service": "media-renderer",
+    }
+    with pytest.raises(ValueError, match="unexpected release registry"):
+        stack.validate_manifest(manifest, REGISTRY)
+    plan["images"]["media-renderer"]["source"] = "media-renderer"
+    with pytest.raises(ValueError, match="unexpected source repository"):
+        stack.validate_manifest(manifest, registry)
 
 
 @pytest.mark.parametrize("bad_ref", ["ghcr.io/overmindv/feed:latest", f"example.test/feed@{DIGEST}", DIGEST])
