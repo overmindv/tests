@@ -1,6 +1,7 @@
 """Release checks run without a registry or a shared test account."""
 
 import json
+import sys
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -87,6 +88,46 @@ def test_candidate_keeps_renderer_source_and_rejects_regular_registry():
     plan["images"]["media-renderer"]["source"] = "media-renderer"
     with pytest.raises(ValueError, match="unexpected source repository"):
         stack.validate_manifest(manifest, registry)
+
+
+def test_built_postgres_is_pinned_and_smoked_only_in_a_private_candidate(monkeypatch):
+    registry = stack.CANDIDATE_REGISTRY
+    manifest = candidate(registry)
+    plan = manifest["plan"]
+    upstream_pg = plan["upstream"]["postgres"]
+    command = Mock(return_value="Postgres fixture passed\n")
+    monkeypatch.setattr(stack, "command", command)
+    stack.verify_postgres(stack.validate_manifest(manifest, registry), INFRA)
+    command.assert_not_called()
+    ref = f"{registry}/postgres@{DIGEST}"
+    plan["images"]["postgres"] = {"source": "infra"}
+    manifest["images"]["postgres"] = ref
+    with pytest.raises(ValueError, match="unexpected upstream image set"):
+        stack.validate_manifest(manifest, registry)
+    plan["upstream"].pop("postgres")
+    release = stack.validate_manifest(manifest, registry)
+    assert release.reference("feed-postgres") == ref
+    assert release.labels("feed-postgres")["io.overmindv.release.source"].endswith("/infra")
+    actual = services(release)
+    assert f"  feed-postgres:\n    image: {json.dumps(ref)}\n" in stack.render_overlay(actual, release)
+    stack.verify_config(actual, release, INFRA)
+    without_database = {name: service for name, service in actual.items() if name != "feed-postgres"}
+    with pytest.raises(ValueError, match="Postgres is missing from Compose"):
+        stack.verify_config(without_database, release, INFRA)
+    with pytest.raises(ValueError, match="Postgres is missing from Compose"):
+        stack.render_overlay(without_database, release)
+    actual["feed-postgres"]["image"] = upstream_pg
+    with pytest.raises(ValueError, match="image drift"):
+        stack.verify_config(actual, release, INFRA)
+    stack.verify_postgres(release, INFRA)
+    command.assert_called_once_with(
+        [sys.executable, "tests/postgres_roles_smoke.py", "--image", ref],
+        cwd=INFRA,
+        timeout=120,
+    )
+    plan["registry"] = REGISTRY
+    with pytest.raises(ValueError, match="only allowed in private candidates"):
+        stack.validate_manifest(manifest, REGISTRY)
 
 
 @pytest.mark.parametrize("bad_ref", ["ghcr.io/overmindv/feed:latest", f"example.test/feed@{DIGEST}", DIGEST])
