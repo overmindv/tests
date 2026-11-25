@@ -53,6 +53,8 @@ class Task(BaseModel):
 
 
 class Submission(BaseModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     id: str
     correct: bool
     verdict: str
@@ -185,6 +187,7 @@ _Q = {
         " }"
         "}"
     ),
+    "get_submission": "query ItSubmission($id: ID!) { itSubmission(id: $id) { id correct verdict } }",
     "my_submissions": (
         "query MyITSubmissions($taskId: ID, $pagination: PaginationInput) {"
         " myITSubmissions(taskId: $taskId, pagination: $pagination) {"
@@ -385,8 +388,19 @@ class Gateway:
                     },
                 },
                 token=user.token,
+                capture_body=False,
             )
         return Submission.model_validate(data["submitITTaskAnswer"])
+
+    def get_submission(self, user: AuthContext, submission_id: str) -> Submission:
+        data = self.gql.execute(
+            "get_submission",
+            _Q["get_submission"],
+            {"id": submission_id},
+            token=user.token,
+            capture_body=False,
+        )
+        return Submission.model_validate(data["itSubmission"])
 
     def my_submissions(self, user: AuthContext, task_id: str | None = None) -> list[dict]:
         with report.step("Получаем историю решений по задаче {task_id}", task_id=task_id or "—"):
@@ -395,6 +409,7 @@ class Gateway:
                 _Q["my_submissions"],
                 {"taskId": task_id, "pagination": {"limit": 50, "offset": 0}},
                 token=user.token,
+                capture_body=False,
             )
         return data.get("myITSubmissions", {}).get("items", [])
 

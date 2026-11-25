@@ -52,6 +52,30 @@ def _encode(value):
     return json.dumps(value).encode()
 
 
+def test_private_choice_submission_and_history_do_not_attach_bodies(gateway_stub):
+    api, calls, responses, attachments = gateway_stub
+    item = {"id": "submission", "correct": True, "verdict": "accepted"}
+    denied = {"message": "private upstream detail", "extensions": {"code": "PERMISSION_DENIED"}}
+    responses.extend([
+        {"data": {"submitITTaskAnswer": item}},
+        {"data": {"itSubmission": item}},
+        {"data": {"myITSubmissions": {"items": [item]}}},
+        {"errors": [denied]},
+    ])
+
+    assert api.submit_answer(ACTOR, "task", "version", ["option"]).id == "submission"
+    assert api.get_submission(ACTOR, "submission").verdict == "accepted"
+    assert api.my_submissions(ACTOR, "task") == [item]
+    with pytest.raises(HttpError) as error:
+        api.get_submission(ACTOR, "other-submission")
+
+    assert calls[1][0]["variables"] == {"id": "submission"}
+    assert all(headers["Authorization"] == f"Bearer {ACTOR.token}" for _, _, headers in calls)
+    assert error.value.response == {"errors": [{"extensions": {"code": "PERMISSION_DENIED"}}]}
+    assert denied["message"] not in str(error.value)
+    assert not attachments
+
+
 def test_legacy_file_submission_omits_mode_from_query_and_variables(gateway_stub):
     api, calls, responses, attachments = gateway_stub
     responses.append({"data": {"submitITTaskCode": {"id": "code", "status": "queued"}}})
